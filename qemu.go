@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 
 	"github.com/u-root/u-root/pkg/qemu"
 )
@@ -23,8 +24,7 @@ type command struct {
 }
 
 func execInVM(ctx context.Context, cmd *command) (*exec.Cmd, error) {
-	// TODO: Cache the call.
-	qemuPath, err := exec.LookPath("qemu-system-x86_64")
+	qemuPath, err := findQemu(runtime.GOARCH)
 	if err != nil {
 		return nil, err
 	}
@@ -104,6 +104,17 @@ func execInVM(ctx context.Context, cmd *command) (*exec.Cmd, error) {
 	}()
 
 	return proc, nil
+}
+
+func findQemu(arch string) (string, error) {
+	switch arch {
+	case "amd64":
+		return exec.LookPath("qemu-system-x86_64")
+	case "arm64":
+		return exec.LookPath("qemu-system-aarch64")
+	default:
+		return "", fmt.Errorf("don't know how to find qemu for %s", arch)
+	}
 }
 
 type initWithArgs struct {
