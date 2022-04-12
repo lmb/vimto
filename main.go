@@ -39,25 +39,19 @@ func run(args []string) error {
 		return err
 	}
 
-	vm, err := execInVM(&command{
-		Kernel: *kernel,
-		Path:   initPath,
-		Args:   fs.Args(),
-		Stdin:  os.Stdin,
-		Stdout: os.Stdout,
-		Stderr: os.Stderr,
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	vm, err := execInVM(ctx, &command{
+		Kernel:      *kernel,
+		Path:        initPath,
+		Args:        fs.Args(),
+		Console:     os.Stdout,
+		SerialPorts: map[string]*os.File{"stderr": os.Stderr},
 	})
 	if err != nil {
 		return err
 	}
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
-
-	go func() {
-		<-ctx.Done()
-		vm.Process.Kill()
-	}()
 
 	if err := vm.Wait(); err != nil {
 		return fmt.Errorf("qemu: %w", err)

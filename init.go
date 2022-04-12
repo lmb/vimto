@@ -4,6 +4,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -69,6 +73,49 @@ func minimalInit(sys syscaller, args []string) error {
 		return fmt.Errorf("early mount: %w", err)
 	}
 
+	ports, err := readVirtioPorts()
+	if err != nil {
+		return fmt.Errorf("read virtio-ports names: %w", err)
+	}
+
+	f, err := os.OpenFile(ports["stderr"], os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if _, err := io.WriteString(f, "testing\n"); err != nil {
+		return err
+	}
+
 	sys.sync()
 	return sys.reboot(unix.LINUX_REBOOT_CMD_POWER_OFF)
+}
+
+// Read the names of virtio ports from /sys.
+//
+// Based on https://gitlab.com/qemu-project/qemu/-/issues/506
+func readVirtioPorts() (map[string]string, error) {
+	const base = "/sys/class/virtio-ports"
+
+	files, err := os.ReadDir(base)
+	if err != nil {
+		return nil, err
+	}
+
+	ports := make(map[string]string)
+	for _, file := range files {
+		if !file.IsDir() {
+			continue
+		}
+
+		name, err := os.ReadFile(filepath.Join(base, file.Name(), "name"))
+		if err != nil {
+			return nil, err
+		}
+
+		ports[strings.TrimSpace(string(name))] = filepath.Join("/dev/", file.Name())
+	}
+
+	return ports, nil
 }
