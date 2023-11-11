@@ -1,7 +1,9 @@
 package main
 
 import (
-	"io"
+	"context"
+	"fmt"
+	"os"
 	"os/exec"
 
 	"github.com/u-root/u-root/pkg/qemu"
@@ -15,51 +17,68 @@ type command struct {
 	Path   string
 	// Arguments passed to the binary at Path. Contrary to exec.Cmd doesn't
 	// contain Path in Args[0].
-	Args   []string
-	Stdin  io.Reader
-	Stdout io.Writer
-	Stderr io.Writer
+	Args        []string
+	Console     *os.File
+	SerialPorts map[string]*os.File
 }
 
-func execInVM(cmd *command) (*exec.Cmd, error) {
+func execInVM(ctx context.Context, cmd *command) (*exec.Cmd, error) {
 	// TODO: Cache the call.
 	qemuPath, err := exec.LookPath("qemu-system-x86_64")
 	if err != nil {
 		return nil, err
 	}
 
+	chardevs := &fdChardevs{}
+	ports := &virtioSerialPorts{make(map[string]string)}
+	devices := []qemu.Device{
+		qemu.ArbitraryArgs{
+			"-enable-kvm",
+			"-cpu", "host",
+			"-parallel", "none", // TODO: Needed?
+			"-net", "none",
+			"-vga", "none",
+			"-display", "none",
+			"-serial", "none",
+			"-monitor", "none",
+			"-m", "768", // TODO: Configurable
+		},
+		qemu.VirtioRandom{},
+		readOnlyRootfs{},
+		exitOnPanic{},
+		disablePS2Probing{},
+		disableRaidAutodetect{},
+		qemu.P9Directory{
+			// TODO: Should be read only?
+			Dir:  "/",
+			Boot: true,
+		},
+		// enableGDBServer{},
+		chardevs,
+		ports,
+	}
+
+	if cmd.Console != nil {
+		devices = append(devices,
+			&serialPort{chardevs.add(cmd.Console)},
+			consoleOnFirstSerialPort{},
+		)
+	}
+
+	for name, port := range cmd.SerialPorts {
+		ports.Chardevs[chardevs.add(port)] = name
+	}
+
+	// init has to go last since we stop processing of KArgs after.
+	devices = append(devices, initWithArgs{
+		cmd.Path,
+		cmd.Args,
+	})
+
 	qemuOpts := qemu.Options{
 		QEMUPath: qemuPath,
 		Kernel:   cmd.Kernel,
-		Devices: []qemu.Device{
-			qemu.ArbitraryArgs{
-				"-enable-kvm",
-				"-cpu", "host",
-				"-parallel", "none", // TODO: Needed?
-				"-net", "none",
-				"-vga", "none",
-				"-display", "none",
-				// "-serial", "none",
-				"-monitor", "none",
-				"-m", "768", // TODO: Configurable
-			},
-			qemu.VirtioRandom{},
-			readOnlyRootfs{},
-			exitOnPanic{},
-			// useStdioAsFirstSerial{},
-			disablePS2Probing{},
-			disableRaidAutodetect{},
-			qemu.P9Directory{
-				// TODO: Should be read only?
-				Dir:  "/",
-				Boot: true,
-			},
-			initWithArgs{
-				cmd.Path,
-				cmd.Args,
-			},
-		},
-		KernelArgs: "earlyprintk=serial,ttyS0,115200 console=ttyS0",
+		Devices:  devices,
 	}
 
 	qemuArgs, err := qemuOpts.Cmdline()
@@ -67,14 +86,9 @@ func execInVM(cmd *command) (*exec.Cmd, error) {
 		return nil, err
 	}
 
-	proc := &exec.Cmd{
-		Path:  qemuArgs[0],
-		Args:  qemuArgs,
-		Stdin: cmd.Stdin,
-		// TODO: Stdout, Stderr should go via separate (?) serial ports
-		Stdout: cmd.Stdout,
-		Stderr: cmd.Stderr,
-	}
+	proc := exec.CommandContext(ctx, qemuArgs[0], qemuArgs[1:]...)
+	proc.Stderr = os.Stderr
+	proc.ExtraFiles = chardevs.Files
 
 	if err := proc.Start(); err != nil {
 		return nil, err
@@ -95,6 +109,98 @@ func (i initWithArgs) Cmdline() []string {
 func (i initWithArgs) KArgs() []string {
 	return append([]string{"init=" + i.path, "--"}, i.args...)
 }
+
+// fdChardevs adds files as a character device.
+//
+// Assumes that files is passed in exec.Cmd.ExtraFiles.
+type fdChardevs struct {
+	Files []*os.File
+	mux   map[*os.File]bool
+}
+
+// add a fd backed chardev.
+//
+// Returns the chardev id allocated for the file.
+func (fds *fdChardevs) add(f *os.File) string {
+	for i, file := range fds.Files {
+		if f == file {
+			if fds.mux == nil {
+				fds.mux = make(map[*os.File]bool)
+			}
+
+			fds.mux[f] = true
+			return fmt.Sprintf("cd-%d", i)
+		}
+	}
+
+	id := fmt.Sprintf("cd-%d", len(fds.Files))
+	fds.Files = append(fds.Files, f)
+	return id
+}
+
+func (fds *fdChardevs) Cmdline() []string {
+	const execFirstExtraFd = 3
+
+	var args []string
+	for i, file := range fds.Files {
+		fd := execFirstExtraFd + i
+		id := fmt.Sprintf("cd-%d", i)
+
+		var extraOpts string
+		if fds.mux[file] {
+			extraOpts += ",mux=on"
+		}
+
+		args = append(args,
+			"-add-fd", fmt.Sprintf("fd=%d,set=%d", fd, fd),
+			"-chardev", fmt.Sprintf("pipe,id=%s,path=/dev/fdset/%d%s", id, fd, extraOpts),
+		)
+	}
+	return args
+}
+
+func (fds *fdChardevs) KArgs() []string { return nil }
+
+// A "simple" serial port using a character device.
+//
+// Probably more portable than virtio-serial, but doesn't allow naming.
+type serialPort struct {
+	Chardev string
+}
+
+func (fdser *serialPort) Cmdline() []string {
+	return []string{
+		"-serial", "chardev:" + fdser.Chardev,
+	}
+}
+
+func (*serialPort) KArgs() []string { return nil }
+
+type virtioSerialPorts struct {
+	// A map of character devices to serial port names.
+	//
+	// Inside the VM, port names can be accessed via /sys/class/virtio-ports.
+	Chardevs map[string]string
+}
+
+func (vios *virtioSerialPorts) Cmdline() []string {
+	if len(vios.Chardevs) == 0 {
+		return nil
+	}
+
+	args := []string{
+		// There seems to be an off by one error with max_ports.
+		"-device", fmt.Sprintf("virtio-serial,max_ports=%d", len(vios.Chardevs)+1),
+	}
+	for dev, name := range vios.Chardevs {
+		args = append(args,
+			"-device", fmt.Sprintf("virtserialport,chardev=%s,name=%s", dev, name),
+		)
+	}
+	return args
+}
+
+func (*virtioSerialPorts) KArgs() []string { return nil }
 
 // Force the root fs to be read-only.
 type readOnlyRootfs struct{}
@@ -118,19 +224,15 @@ func (exitOnPanic) KArgs() []string {
 	return []string{"panic=-1"}
 }
 
-type useStdioAsFirstSerial struct{}
+type consoleOnFirstSerialPort struct{}
 
-func (useStdioAsFirstSerial) Cmdline() []string {
+func (consoleOnFirstSerialPort) Cmdline() []string { return nil }
+
+func (consoleOnFirstSerialPort) KArgs() []string {
 	return []string{
-		"-echr", "1",
-		"-serial", "none",
-		"-chardev", "stdio,id=console,signal=off,mux=on",
-		"-serial", "chardev:console",
+		"earlyprintk=serial,ttyS0,115200",
+		"console=ttyS0",
 	}
-}
-
-func (useStdioAsFirstSerial) KArgs() []string {
-	return nil
 }
 
 // Disable PS/2 protocol probing to speed up booting.
@@ -153,4 +255,14 @@ func (disableRaidAutodetect) Cmdline() []string {
 
 func (disableRaidAutodetect) KArgs() []string {
 	return []string{"raid=noautodetect"}
+}
+
+type enableGDBServer struct{}
+
+func (enableGDBServer) Cmdline() []string {
+	return []string{"-s", "-S"}
+}
+
+func (enableGDBServer) KArgs() []string {
+	return nil
 }

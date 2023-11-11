@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 
@@ -14,7 +15,8 @@ import (
 func main() {
 	var err error
 	if os.Getpid() == 1 {
-		err = minimalInit(realSyscaller{}, os.Args[1:])
+		// TODO: Do something with os.Args[1:]
+		err = minimalInit(realSyscaller{}, dummy)
 	} else {
 		err = run(os.Args[1:])
 	}
@@ -38,19 +40,7 @@ func run(args []string) error {
 		return fmt.Errorf("need kernel")
 	}
 
-	_, err := findExecutable()
-	if err != nil {
-		return err
-	}
-
-	vm, err := execInVM(&command{
-		Kernel: *kernel,
-		Path:   initPath,
-		Args:   fs.Args(),
-		Stdin:  os.Stdin,
-		Stdout: os.Stdout,
-		Stderr: os.Stderr,
-	})
+	init, err := findExecutable()
 	if err != nil {
 		return err
 	}
@@ -58,16 +48,38 @@ func run(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	go func() {
-		<-ctx.Done()
-		vm.Process.Kill()
-	}()
+	cons, err := os.Create("console.log")
+	if err != nil {
+		return err
+	}
+	defer cons.Close()
+
+	vm, err := execInVM(ctx, &command{
+		Kernel:  *kernel,
+		Path:    init,
+		Args:    fs.Args(),
+		Console: cons,
+		SerialPorts: map[string]*os.File{
+			stdoutPort: os.Stdout,
+			stderrPort: os.Stderr,
+		},
+	})
+	if err != nil {
+		return err
+	}
 
 	if err := vm.Wait(); err != nil {
 		return fmt.Errorf("qemu: %w", err)
 	}
 
 	return nil
+}
+
+func dummy() {
+	_, err := io.WriteString(os.Stderr, "testing\n")
+	if err != nil {
+		panic(err)
+	}
 }
 
 func findExecutable() (string, error) {
@@ -88,5 +100,6 @@ func findExecutable() (string, error) {
 		return "", err
 	}
 
+	// TODO: This should validate that the file is statically linked.
 	return path, nil
 }
