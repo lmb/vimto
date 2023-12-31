@@ -8,6 +8,7 @@
 *.dll
 *.so
 *.dylib
+/vimto
 
 # Test binary, built with `go test -c`
 *.test

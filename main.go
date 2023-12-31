@@ -15,8 +15,7 @@ import (
 func main() {
 	var err error
 	if os.Getpid() == 1 {
-		// TODO: Do something with os.Args[1:]
-		err = minimalInit(realSyscaller{}, dummy)
+		err = dummy()
 	} else {
 		err = run(os.Args[1:])
 	}
@@ -56,7 +55,7 @@ func run(args []string) error {
 
 	vm, err := execInVM(ctx, &command{
 		Kernel:  *kernel,
-		Path:    init,
+		Init:    init,
 		Args:    fs.Args(),
 		Console: cons,
 		SerialPorts: map[string]*os.File{
@@ -75,11 +74,19 @@ func run(args []string) error {
 	return nil
 }
 
-func dummy() {
-	_, err := io.WriteString(os.Stderr, "testing\n")
+func dummy() error {
+	pid1, err := minimalInit(realSyscaller{})
 	if err != nil {
-		panic(err)
+		return err
 	}
+
+	_, err = io.WriteString(os.Stderr, "testing\n")
+	if err != nil {
+		return err
+	}
+	fmt.Println(pid1.Ports)
+
+	return pid1.Shutdown()
 }
 
 func findExecutable() (string, error) {

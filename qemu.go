@@ -14,9 +14,9 @@ import (
 // Mirrors exec.Cmd.
 type command struct {
 	Kernel string
-	Path   string
-	// Arguments passed to the binary at Path. Contrary to exec.Cmd doesn't
-	// contain Path in Args[0].
+	Init   string
+	// Arguments passed to the init process. Contrary to exec.Cmd doesn't
+	// contain Init in Args[0].
 	Args        []string
 	Console     *os.File
 	SerialPorts map[string]*os.File
@@ -49,7 +49,6 @@ func execInVM(ctx context.Context, cmd *command) (*exec.Cmd, error) {
 		disablePS2Probing{},
 		disableRaidAutodetect{},
 		qemu.P9Directory{
-			// TODO: Should be read only?
 			Dir:  "/",
 			Boot: true,
 		},
@@ -71,7 +70,7 @@ func execInVM(ctx context.Context, cmd *command) (*exec.Cmd, error) {
 
 	// init has to go last since we stop processing of KArgs after.
 	devices = append(devices, initWithArgs{
-		cmd.Path,
+		cmd.Init,
 		cmd.Args,
 	})
 
@@ -88,6 +87,7 @@ func execInVM(ctx context.Context, cmd *command) (*exec.Cmd, error) {
 
 	proc := exec.CommandContext(ctx, qemuArgs[0], qemuArgs[1:]...)
 	proc.Stderr = os.Stderr
+	fmt.Printf("%q\n", proc.Args[1:])
 	proc.ExtraFiles = chardevs.Files
 
 	if err := proc.Start(); err != nil {

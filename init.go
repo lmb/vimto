@@ -64,28 +64,37 @@ const (
 	stderrPort = "stderr"
 )
 
-func minimalInit(sys syscaller, fn func()) error {
+type pid1 struct {
+	sys   syscaller
+	Ports map[string]string
+}
+
+func minimalInit(sys syscaller) (*pid1, error) {
 	if err := mount(sys, earlyMounts); err != nil {
-		return fmt.Errorf("early mount: %w", err)
+		return nil, fmt.Errorf("early mount: %w", err)
 	}
 
 	ports, err := readVirtioPorts()
 	if err != nil {
-		return fmt.Errorf("read virtio-ports names: %w", err)
-	}
-
-	if err := replaceStdioWith(sys, 1, ports[stdoutPort]); err != nil {
-		return fmt.Errorf("replace stdout: %w", err)
+		return nil, fmt.Errorf("read virtio-ports names: %w", err)
 	}
 
 	if err := replaceStdioWith(sys, 2, ports[stderrPort]); err != nil {
-		return fmt.Errorf("replace stderr: %w", err)
+		return nil, fmt.Errorf("replace stderr: %w", err)
 	}
+	delete(ports, stderrPort)
 
-	fn()
+	if err := replaceStdioWith(sys, 1, ports[stdoutPort]); err != nil {
+		return nil, fmt.Errorf("replace stdout: %w", err)
+	}
+	delete(ports, stdoutPort)
 
-	sys.sync()
-	return sys.reboot(unix.LINUX_REBOOT_CMD_POWER_OFF)
+	return &pid1{sys, ports}, nil
+}
+
+func (p *pid1) Shutdown() error {
+	p.sys.sync()
+	return p.sys.reboot(unix.LINUX_REBOOT_CMD_POWER_OFF)
 }
 
 func replaceStdioWith(sys syscaller, fd int, path string) error {
