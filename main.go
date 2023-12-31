@@ -29,13 +29,38 @@ func main() {
 func run(args []string) error {
 	fs := flag.NewFlagSet("vimto", flag.ContinueOnError)
 	kernel := fs.String("vm.kernel", "", "`path` to the Linux image")
+	image := fs.String("vm.image", "", "OCI `url:tag` containing a Linux image")
 	if err := fs.Parse(args); errors.Is(err, flag.ErrHelp) {
 		return nil
 	} else if err != nil {
 		return err
 	}
 
-	if *kernel == "" {
+	var vmlinuz string
+	var cache ociCache
+	if *image != "" {
+		oi, err := cache.Acquire(context.Background(), *image)
+		if err != nil {
+			return fmt.Errorf("retrieve kernel from OCI image: %w", err)
+		}
+		defer oi.Release()
+
+		vmlinuz = oi.Kernel
+	}
+
+	if *kernel != "" {
+		if vmlinuz != "" {
+			return fmt.Errorf("conflicting kernel source")
+		}
+
+		if _, err := os.Stat(*kernel); err != nil {
+			return fmt.Errorf("file %q doesn't exist", *kernel)
+		}
+
+		vmlinuz = *kernel
+	}
+
+	if vmlinuz == "" {
 		return fmt.Errorf("need kernel")
 	}
 
@@ -54,7 +79,7 @@ func run(args []string) error {
 	defer cons.Close()
 
 	vm, err := execInVM(ctx, &command{
-		Kernel:  *kernel,
+		Kernel:  vmlinuz,
 		Init:    init,
 		Args:    fs.Args(),
 		Console: cons,
