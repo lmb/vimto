@@ -1,0 +1,2 @@
+vimto -help
+stderr Usage
