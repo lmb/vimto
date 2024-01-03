@@ -1,0 +1,25 @@
+exec go test -exec vimto -run Success -vm.image=ghcr.io/cilium/ci-kernels:6.6 -v .
+stdout TestSuccess
+
+! exec go test -exec vimto -run Failure -vm.image=ghcr.io/cilium/ci-kernels:6.6 .
+stdout TestFailure
+
+-- go.mod --
+
+module test
+
+go 1.21
+
+-- main_test.go --
+
+package main
+
+import "testing"
+
+func TestSuccess(t *testing.T) {
+	t.Log("Zaphod Beeblebrox is a hoopy frood")
+}
+
+func TestFailure(t *testing.T) {
+	t.Error("Groop, I implore thee, my foonting turlingdromes")
+}

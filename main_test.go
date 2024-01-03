@@ -16,6 +16,7 @@ import (
 func TestExecutable(t *testing.T) {
 	path := t.TempDir()
 	cmd := exec.Command("go", "build", "-o", path, ".")
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Log(string(output))
 		t.Fatal("Failed to compile binary:", err)
@@ -28,8 +29,16 @@ func TestExecutable(t *testing.T) {
 
 	var env []string
 	for _, v := range os.Environ() {
-		if strings.HasPrefix(v, "GO") || strings.HasPrefix(v, "PATH=") {
-			env = append(env, v)
+		for _, prefix := range []string{
+			"GO",
+			"XDG_",
+			"PATH=",
+			"HOME=",
+		} {
+			if strings.HasPrefix(v, prefix) {
+				env = append(env, v)
+				break
+			}
 		}
 	}
 

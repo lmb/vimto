@@ -59,35 +59,34 @@ func mount(sys syscaller, mounts []*mountPoint) error {
 	return nil
 }
 
-const (
-	stdoutPort = "stdout"
-	stderrPort = "stderr"
-)
-
 type pid1 struct {
 	sys   syscaller
 	Ports map[string]string
 }
 
-func minimalInit(sys syscaller) (*pid1, error) {
+func minimalInit(sys syscaller, stdioPort string) (*pid1, error) {
 	if err := mount(sys, earlyMounts); err != nil {
 		return nil, fmt.Errorf("early mount: %w", err)
 	}
 
-	ports, err := readVirtioPorts()
+	stdio, err := os.OpenFile(stdioPort, os.O_RDWR, 0)
 	if err != nil {
-		return nil, fmt.Errorf("read virtio-ports names: %w", err)
+		return nil, fmt.Errorf("open stdio: %w", err)
 	}
+	defer stdio.Close()
 
-	if err := replaceStdioWith(sys, 2, ports[stderrPort]); err != nil {
+	if err := replaceFdWithFile(sys, 2, stdio); err != nil {
 		return nil, fmt.Errorf("replace stderr: %w", err)
 	}
-	delete(ports, stderrPort)
 
-	if err := replaceStdioWith(sys, 1, ports[stdoutPort]); err != nil {
+	if err := replaceFdWithFile(sys, 1, stdio); err != nil {
 		return nil, fmt.Errorf("replace stdout: %w", err)
 	}
-	delete(ports, stdoutPort)
+
+	ports, err := readVirtioPorts()
+	if err != nil {
+		return nil, err
+	}
 
 	return &pid1{sys, ports}, nil
 }
@@ -97,15 +96,21 @@ func (p *pid1) Shutdown() error {
 	return p.sys.reboot(unix.LINUX_REBOOT_CMD_POWER_OFF)
 }
 
-func replaceStdioWith(sys syscaller, fd int, path string) error {
-	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+func replaceFdWithFile(sys syscaller, fd int, file *os.File) error {
+	raw, err := file.SyscallConn()
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 
-	// dup2 overwrites fd with the newly opened file.
-	return sys.dup2(int(f.Fd()), fd)
+	var dupErr error
+	err = raw.Control(func(replacement uintptr) {
+		// dup2 overwrites fd with the newly opened file.
+		dupErr = sys.dup2(int(replacement), fd)
+	})
+	if err != nil {
+		return err
+	}
+	return dupErr
 }
 
 // Read the names of virtio ports from /sys.
