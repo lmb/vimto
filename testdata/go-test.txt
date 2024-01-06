@@ -1,7 +1,7 @@
-exec go test -exec vimto -run Success -vm.image=ghcr.io/cilium/ci-kernels:6.6 -v .
+exec go test -exec vimto -run Success -vm.kernel=${PKG}/testdata/vmlinuz -v .
 stdout TestSuccess
 
-! exec go test -exec vimto -run Failure -vm.image=ghcr.io/cilium/ci-kernels:6.6 .
+! exec go test -exec vimto -run Failure -vm.kernel=${PKG}/testdata/vmlinuz .
 stdout TestFailure
 
 -- go.mod --

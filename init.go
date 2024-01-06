@@ -69,7 +69,12 @@ func minimalInit(sys syscaller, stdioPort string) (*pid1, error) {
 		return nil, fmt.Errorf("early mount: %w", err)
 	}
 
-	stdio, err := os.OpenFile(stdioPort, os.O_RDWR, 0)
+	ports, err := readVirtioPorts()
+	if err != nil {
+		return nil, err
+	}
+
+	stdio, err := os.OpenFile(ports[stdioPort], os.O_RDWR, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open stdio: %w", err)
 	}
@@ -81,11 +86,6 @@ func minimalInit(sys syscaller, stdioPort string) (*pid1, error) {
 
 	if err := replaceFdWithFile(sys, 1, stdio); err != nil {
 		return nil, fmt.Errorf("replace stdout: %w", err)
-	}
-
-	ports, err := readVirtioPorts()
-	if err != nil {
-		return nil, err
 	}
 
 	return &pid1{sys, ports}, nil

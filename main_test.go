@@ -42,5 +42,10 @@ func TestExecutable(t *testing.T) {
 		}
 	}
 
+	// Make package path available in the script.
+	pwd, err := os.Getwd()
+	qt.Assert(t, qt.IsNil(err))
+	env = append(env, "PKG="+pwd)
+
 	scripttest.Test(t, context.Background(), e, env, "testdata/*.txt")
 }

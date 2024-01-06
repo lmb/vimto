@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"runtime"
 	"sync"
 	"time"
 
@@ -39,35 +40,20 @@ type command struct {
 }
 
 func (cmd *command) execInVM(ctx context.Context) (err error) {
+	const controlPortName = "ctrl"
+	const stdioPortName = "stdio"
+
 	if cmd.cmd != nil {
 		return errors.New("qemu: already started")
 	}
 
-	// TODO: Cache the call.
-	qemuPath, err := exec.LookPath("qemu-system-x86_64")
-	if err != nil {
-		return err
-	}
-
-	args := qemu.ArbitraryArgs{
-		"-enable-kvm",
-		"-cpu", "host",
-		"-parallel", "none", // TODO: Needed?
-		"-net", "none",
-		"-vga", "none",
-		"-display", "none",
-		"-serial", "none",
-		"-monitor", "none",
-		"-no-reboot",
-		"-m", "768", // TODO: Configurable
-		"-chardev", "stdio,id=stdio",
-	}
 	cds := &chardevs{}
 	ports := &serialPorts{}
 	virtioPorts := &virtioSerialPorts{make(map[chardev]string)}
 
 	// The first serial port is always console, earlyprintk and SeaBIOS (on amd64)
 	// output. SeaBIOS seems to always write to the first serial port.
+	// Some platforms like the arm64 virt board only have a single console.
 	consoleHost, consoleGuest, err := unixSocketpair()
 	if err != nil {
 		return err
@@ -85,14 +71,25 @@ func (cmd *command) execInVM(ctx context.Context) (err error) {
 	defer controlHost.Close()
 	defer controlGuest.Close()
 
-	controlPort := ports.add(cds.addFile(controlGuest))
+	virtioPorts.Chardevs[cds.addFile(controlGuest)] = controlPortName
 
 	// The third serial port is always stdio. The init process executes
 	// subprocesses with this port as stdin, stdout and stderr.
-	stdioPort := ports.add(chardev("stdio"))
+	virtioPorts.Chardevs[chardev("stdio")] = stdioPortName
 
 	devices := []qemu.Device{
-		args,
+		qemu.ArbitraryArgs{
+			"-enable-kvm",
+			"-cpu", "host",
+			"-parallel", "none", // TODO: Needed?
+			"-net", "none",
+			"-vga", "none",
+			"-display", "none",
+			"-serial", "none",
+			"-monitor", "none",
+			"-m", "768", // TODO: Configurable
+			"-chardev", "stdio,id=stdio",
+		},
 		qemu.VirtioRandom{},
 		readOnlyRootfs{},
 		exitOnPanic{},
@@ -109,6 +106,23 @@ func (cmd *command) execInVM(ctx context.Context) (err error) {
 		consoleOnSerialPort{consolePort},
 	}
 
+	var binary string
+	switch runtime.GOARCH {
+	case "amd64":
+		binary = "qemu-system-x86_64"
+		devices = append(devices, earlyprintkOnSerialPort{consolePort})
+
+	case "arm64":
+		binary = "qemu-system-aarch64"
+		devices = append(devices,
+			qemu.ArbitraryArgs{"-machine", "virt,gic-version=host"},
+			earlycon{},
+		)
+
+	default:
+		return fmt.Errorf("unsupported GOARCH %s", runtime.GOARCH)
+	}
+
 	for name, port := range cmd.SerialPorts {
 		virtioPorts.Chardevs[cds.addFile(port)] = name
 	}
@@ -121,8 +135,13 @@ func (cmd *command) execInVM(ctx context.Context) (err error) {
 	// init has to go last since we stop processing of KArgs after.
 	devices = append(devices, initWithArgs{
 		init,
-		append([]string{"/dev/" + stdioPort, "/dev/" + controlPort}, cmd.Args...),
+		append([]string{stdioPortName, controlPortName}, cmd.Args...),
 	})
+
+	qemuPath, err := exec.LookPath(binary)
+	if err != nil {
+		return err
+	}
 
 	qemuOpts := qemu.Options{
 		QEMUPath: qemuPath,
@@ -220,7 +239,7 @@ func executeTest(args []string) error {
 		return err
 	}
 
-	control, err := os.OpenFile(args[1], os.O_WRONLY, 0)
+	control, err := os.OpenFile(pid1.Ports[args[1]], os.O_WRONLY, 0)
 	if err != nil {
 		return err
 	}
@@ -325,7 +344,12 @@ type serialPorts struct {
 }
 
 func (ports *serialPorts) add(cd chardev) string {
-	port := fmt.Sprintf("ttyS%d", len(ports.Chardevs))
+	pattern := "ttyS%d"
+	if runtime.GOARCH == "arm64" {
+		pattern = "ttyAMA%d"
+	}
+
+	port := fmt.Sprintf(pattern, len(ports.Chardevs))
 	ports.Chardevs = append(ports.Chardevs, cd)
 	return port
 }
@@ -397,8 +421,30 @@ func (consoleOnSerialPort) Cmdline() []string { return nil }
 
 func (cs consoleOnSerialPort) KArgs() []string {
 	return []string{
-		fmt.Sprintf("earlyprintk=serial,%s,115200", cs.Port),
-		"console=" + cs.Port,
+		fmt.Sprintf("console=%s,115200", cs.Port),
+	}
+}
+
+type earlyprintkOnSerialPort struct {
+	Port string
+}
+
+func (earlyprintkOnSerialPort) Cmdline() []string { return nil }
+
+func (epk earlyprintkOnSerialPort) KArgs() []string {
+	return []string{
+		fmt.Sprintf("earlyprintk=serial,%s,115200", epk.Port),
+	}
+}
+
+type earlycon struct {
+}
+
+func (earlycon) Cmdline() []string { return nil }
+
+func (epk earlycon) KArgs() []string {
+	return []string{
+		"earlycon=pl011,0x9000000",
 	}
 }
 
