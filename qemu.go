@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/u-root/u-root/pkg/qemu"
@@ -28,7 +30,11 @@ type command struct {
 	Stderr      io.Writer
 	SerialPorts map[string]*os.File
 
-	cmd     *exec.Cmd
+	cmd *exec.Cmd
+	// Buffers must only be read after Wait() has returned and copiers
+	// is released.
+	copiers sync.WaitGroup
+	console bytes.Buffer
 	control net.Conn
 }
 
@@ -132,32 +138,48 @@ func (cmd *command) execInVM(ctx context.Context) (err error) {
 	proc := exec.CommandContext(ctx, qemuArgs[0], qemuArgs[1:]...)
 	proc.Stdin = cmd.Stdin
 	proc.Stdout = cmd.Stdout
-	// TODO: qemu writes to stderr, which is not what we want.
 	proc.Stderr = cmd.Stderr
 	fmt.Printf("%q\n", proc.Args[1:])
 	proc.ExtraFiles = cds.Files
 
-	if err := proc.Start(); err != nil {
+	console, err := net.FileConn(consoleHost)
+	if err != nil {
 		return err
 	}
 
 	control, err := net.FileConn(controlHost)
 	if err != nil {
+		console.Close()
 		return err
 	}
 
+	if err := proc.Start(); err != nil {
+		console.Close()
+		control.Close()
+		return err
+	}
+
+	cmd.copiers.Add(1)
+	go func() {
+		defer cmd.copiers.Done()
+		defer console.Close()
+
+		_, _ = io.Copy(&cmd.console, console)
+	}()
+
 	cmd.cmd = proc
 	cmd.control = control
-	return err
+	return nil
 }
 
 func (cmd *command) Wait() error {
 	defer cmd.control.Close()
 
 	if err := cmd.cmd.Wait(); err != nil {
-		// TODO: Include stderr output if any.
-		return fmt.Errorf("qemu: %w", err)
+		return err
 	}
+
+	cmd.copiers.Wait()
 
 	ctrl := cmd.control
 	if err := ctrl.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
@@ -167,7 +189,9 @@ func (cmd *command) Wait() error {
 	dec := json.NewDecoder(ctrl)
 	var result execResult
 	if err := dec.Decode(&result); err != nil {
-		// TODO: Handle timeout specifically?
+		if cmd.Stderr != nil {
+			_, _ = io.Copy(cmd.Stderr, &cmd.console)
+		}
 		return fmt.Errorf("decode execution result: %w", err)
 	}
 
