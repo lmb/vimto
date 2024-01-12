@@ -88,6 +88,10 @@ func minimalInit(sys syscaller, stdioPort string) (*pid1, error) {
 		return nil, fmt.Errorf("replace stdout: %w", err)
 	}
 
+	if err := replaceFdWithFile(sys, 0, stdio); err != nil {
+		return nil, fmt.Errorf("replace stdin: %w", err)
+	}
+
 	return &pid1{sys, ports}, nil
 }
 

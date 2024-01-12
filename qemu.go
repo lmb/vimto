@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"runtime"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/u-root/u-root/pkg/qemu"
@@ -37,9 +38,17 @@ type command struct {
 	copiers sync.WaitGroup
 	console bytes.Buffer
 	control net.Conn
+	// Write end of a pipe used to provide a blocking stdin to qemu.
+	fakeStdin *os.File
 }
 
 func (cmd *command) execInVM(ctx context.Context) (err error) {
+	closeOnError := func(c io.Closer) {
+		if err != nil {
+			c.Close()
+		}
+	}
+
 	const controlPortName = "ctrl"
 	const stdioPortName = "stdio"
 
@@ -154,10 +163,34 @@ func (cmd *command) execInVM(ctx context.Context) (err error) {
 		return err
 	}
 
+	stdinIsDevZero := false
+	if f, ok := cmd.Stdin.(*os.File); ok {
+		stdinIsDevZero, err = fileIsDevZero(f)
+		if err != nil {
+			return fmt.Errorf("stdin: %w", err)
+		}
+	}
+
+	stdin := cmd.Stdin
+	if stdin == nil || stdinIsDevZero {
+		// Writing to stdio in the guest hangs when stdin is /dev/zero.
+		// Use an empty pipe instead.
+		fakeStdinGuest, fakeStdinHost, err := os.Pipe()
+		if err != nil {
+			return fmt.Errorf("create fake stdin: %w", err)
+		}
+		defer fakeStdinGuest.Close()
+		defer closeOnError(fakeStdinHost)
+
+		stdin = fakeStdinGuest
+		cmd.fakeStdin = fakeStdinHost
+	}
+
 	proc := exec.CommandContext(ctx, qemuArgs[0], qemuArgs[1:]...)
-	proc.Stdin = cmd.Stdin
+	proc.Stdin = stdin
 	proc.Stdout = cmd.Stdout
 	proc.Stderr = cmd.Stderr
+	proc.WaitDelay = time.Second
 	fmt.Printf("%q\n", proc.Args[1:])
 	proc.ExtraFiles = cds.Files
 
@@ -193,6 +226,7 @@ func (cmd *command) execInVM(ctx context.Context) (err error) {
 
 func (cmd *command) Wait() error {
 	defer cmd.control.Close()
+	defer cmd.fakeStdin.Close()
 
 	if err := cmd.cmd.Wait(); err != nil {
 		return err
@@ -487,4 +521,28 @@ func unixSocketpair() (*os.File, *os.File, error) {
 	}
 
 	return os.NewFile(uintptr(fds[0]), ""), os.NewFile(uintptr(fds[1]), ""), nil
+}
+
+func fileIsDevZero(f *os.File) (bool, error) {
+	info, err := f.Stat()
+	if err != nil {
+		return false, err
+	}
+
+	fStat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return false, fmt.Errorf("GOOS not supported: %s", runtime.GOOS)
+	}
+
+	nullInfo, err := os.Stat(os.DevNull)
+	if err != nil {
+		return false, err
+	}
+
+	nullStat, ok := nullInfo.Sys().(*syscall.Stat_t)
+	if !ok {
+		return false, fmt.Errorf("GOOS not supported: %s", runtime.GOOS)
+	}
+
+	return fStat.Rdev == nullStat.Rdev, nil
 }
