@@ -6,7 +6,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/sys/unix"
@@ -17,7 +19,7 @@ func main() {
 
 	var err error
 	if os.Getpid() == 1 {
-		err = executeTest(args)
+		err = minimalInit(realSyscaller{}, args, executeTest)
 	} else {
 		err = run(args)
 	}
@@ -80,6 +82,10 @@ func run(args []string) error {
 		Stdin:  os.Stdin,
 		Stdout: os.Stdout,
 		Stderr: os.Stderr,
+		SharedDirectories: []string{
+			// Ensure that the executable path is always available in the guest.
+			filepath.Dir(testBinary),
+		},
 	}
 
 	err := cmd.execInVM(ctx)
@@ -88,10 +94,18 @@ func run(args []string) error {
 	}
 
 	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("qemu: %w", err)
+		return err
 	}
 
 	return nil
+}
+
+func executeTest(env *env) error {
+	cmd := exec.Command(env.Args[0], env.Args[1:]...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 func findExecutable() (string, error) {

@@ -11,13 +11,15 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"sync"
 	"syscall"
 	"time"
 
 	"github.com/u-root/u-root/pkg/qemu"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/unix"
 )
+
+const p9RootTag = "/dev/root"
 
 // command is a binary to be executed under a different kernel.
 //
@@ -26,18 +28,19 @@ type command struct {
 	Kernel string
 	// Arguments spassed to the init process. Contrary to exec.Cmd doesn't
 	// contain Init in Args[0].
-	Args        []string
-	Stdin       io.Reader
-	Stdout      io.Writer
-	Stderr      io.Writer
-	SerialPorts map[string]*os.File
+	Args              []string
+	Stdin             io.Reader
+	Stdout            io.Writer
+	Stderr            io.Writer
+	SerialPorts       map[string]*os.File
+	SharedDirectories []string
 
-	cmd *exec.Cmd
-	// Buffers must only be read after Wait() has returned and copiers
-	// is released.
-	copiers sync.WaitGroup
+	cmd   *exec.Cmd
+	tasks errgroup.Group
+	// Console contains boot diagnostics may only be read once tasks.Wait() has returned.
 	console bytes.Buffer
-	control net.Conn
+	// Results may contain the result of an execution after tasks.Wait() has returned.
+	results chan *execResult
 	// Write end of a pipe used to provide a blocking stdin to qemu.
 	fakeStdin *os.File
 }
@@ -104,10 +107,7 @@ func (cmd *command) execInVM(ctx context.Context) (err error) {
 		exitOnPanic{},
 		disablePS2Probing{},
 		disableRaidAutodetect{},
-		qemu.P9Directory{
-			Dir:  "/",
-			Boot: true,
-		},
+		&p9Root{Path: "/"},
 		// enableGDBServer{},
 		cds,
 		ports,
@@ -136,6 +136,17 @@ func (cmd *command) execInVM(ctx context.Context) (err error) {
 		virtioPorts.Chardevs[cds.addFile(port)] = name
 	}
 
+	mountTags := make(map[string]string)
+	for i, path := range cmd.SharedDirectories {
+		id := fmt.Sprintf("sd-9p-%d", i)
+		mountTags[id] = path
+		devices = append(devices, &p9SharedDirectory{
+			ID:   fsdev(id),
+			Tag:  id,
+			Path: path,
+		})
+	}
+
 	init, err := findExecutable()
 	if err != nil {
 		return err
@@ -144,7 +155,7 @@ func (cmd *command) execInVM(ctx context.Context) (err error) {
 	// init has to go last since we stop processing of KArgs after.
 	devices = append(devices, initWithArgs{
 		init,
-		append([]string{stdioPortName, controlPortName}, cmd.Args...),
+		[]string{stdioPortName, controlPortName},
 	})
 
 	qemuPath, err := exec.LookPath(binary)
@@ -191,7 +202,6 @@ func (cmd *command) execInVM(ctx context.Context) (err error) {
 	proc.Stdout = cmd.Stdout
 	proc.Stderr = cmd.Stderr
 	proc.WaitDelay = time.Second
-	fmt.Printf("%q\n", proc.Args[1:])
 	proc.ExtraFiles = cds.Files
 
 	console, err := net.FileConn(consoleHost)
@@ -211,97 +221,71 @@ func (cmd *command) execInVM(ctx context.Context) (err error) {
 		return err
 	}
 
-	cmd.copiers.Add(1)
-	go func() {
-		defer cmd.copiers.Done()
+	cmd.tasks.Go(func() error {
 		defer console.Close()
 
-		_, _ = io.Copy(&cmd.console, console)
-	}()
+		_, err = io.Copy(&cmd.console, console)
+		return err
+	})
+
+	results := make(chan *execResult, 1)
+	cmd.tasks.Go(func() error {
+		defer control.Close()
+
+		exec := execCommand{
+			cmd.Args,
+			mountTags,
+		}
+
+		enc := json.NewEncoder(control)
+		if err := enc.Encode(&exec); err != nil {
+			return err
+		}
+
+		var result execResult
+		dec := json.NewDecoder(control)
+		if err := dec.Decode(&result); err != nil {
+			return fmt.Errorf("decode execution result: %w", err)
+		}
+
+		results <- &result
+		return nil
+	})
 
 	cmd.cmd = proc
-	cmd.control = control
+	cmd.results = results
 	return nil
 }
 
 func (cmd *command) Wait() error {
-	defer cmd.control.Close()
 	defer cmd.fakeStdin.Close()
 
 	if err := cmd.cmd.Wait(); err != nil {
-		return err
+		return fmt.Errorf("qemu: %w", err)
 	}
 
-	cmd.copiers.Wait()
-
-	ctrl := cmd.control
-	if err := ctrl.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
-		return err
-	}
-
-	dec := json.NewDecoder(ctrl)
-	var result execResult
-	if err := dec.Decode(&result); err != nil {
+	if err := cmd.tasks.Wait(); err != nil {
 		if cmd.Stderr != nil {
 			_, _ = io.Copy(cmd.Stderr, &cmd.console)
 		}
-		return fmt.Errorf("decode execution result: %w", err)
+		return err
 	}
 
-	if result.ExitCode != 0 {
-		if result.ExitCode == -1 && result.Error != "" {
-			return fmt.Errorf("guest process: %s", result.Error)
-		}
-		return fmt.Errorf("guest process exited with %d", result.ExitCode)
+	result := <-cmd.results
+	if result.Error != "" {
+		return fmt.Errorf("guest: %s", result.Error)
 	}
 
 	return nil
 }
 
-type execResult struct {
-	ExitCode int
-	Error    string
+type execCommand struct {
+	Args      []string
+	MountTags map[string]string // map[tag]path
 }
 
-func executeTest(args []string) error {
-	if len(args) < 3 {
-		return fmt.Errorf("missing arguments")
-	}
-
-	pid1, err := minimalInit(realSyscaller{}, args[0])
-	if err != nil {
-		return err
-	}
-
-	control, err := os.OpenFile(pid1.Ports[args[1]], os.O_WRONLY, 0)
-	if err != nil {
-		return err
-	}
-	defer control.Close()
-
-	cmd := exec.Command(args[2], args[3:]...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	var result execResult
-	err = cmd.Run()
-	if err != nil {
-		result.ExitCode = -1
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			result.ExitCode = exitErr.ExitCode()
-		} else {
-			result.Error = err.Error()
-		}
-	}
-
-	enc := json.NewEncoder(control)
-	if err := enc.Encode(&result); err != nil {
-		return err
-	}
-
-	return pid1.Shutdown()
+type execResult struct {
+	Error string
 }
 
 type initWithArgs struct {
@@ -511,6 +495,46 @@ func (enableGDBServer) Cmdline() []string {
 }
 
 func (enableGDBServer) KArgs() []string {
+	return nil
+}
+
+type fsdev string
+
+type p9Root struct {
+	Path string
+}
+
+func (p9r *p9Root) Cmdline() []string {
+	return []string{
+		// Need security_model=none due to https://gitlab.com/qemu-project/qemu/-/issues/173
+		"-fsdev", fmt.Sprintf("local,id=rootdrv,path=%s,security_model=none,multidevs=remap", p9r.Path),
+		"-device", "virtio-9p-pci,fsdev=rootdrv,mount_tag=/dev/root",
+	}
+}
+
+func (*p9Root) KArgs() []string {
+	return []string{
+		"devtmpfs.mount=1",
+		"root=/dev/root",
+		"rootfstype=9p",
+		"rootflags=trans=virtio,version=9p2000.L",
+	}
+}
+
+type p9SharedDirectory struct {
+	ID   fsdev
+	Tag  string
+	Path string
+}
+
+func (p9sd *p9SharedDirectory) Cmdline() []string {
+	return []string{
+		"-fsdev", fmt.Sprintf("local,id=%s,path=%s,security_model=mapped,multidevs=remap", p9sd.ID, p9sd.Path),
+		"-device", fmt.Sprintf("virtio-9p-pci,fsdev=%s,mount_tag=%s", p9sd.ID, p9sd.Tag),
+	}
+}
+
+func (*p9SharedDirectory) KArgs() []string {
 	return nil
 }
 
