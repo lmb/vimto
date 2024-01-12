@@ -1,7 +1,7 @@
 exec go test -exec vimto -run Success -vm.kernel=${PKG}/testdata/vmlinuz -v .
 stdout TestSuccess
 
-! exec go test -exec vimto -run Failure -vm.kernel=${PKG}/testdata/vmlinuz .
+! exec go test -exec vimto -run Failure -vm.kernel ${PKG}/testdata/vmlinuz .
 stdout TestFailure
 
 -- go.mod --

@@ -31,10 +31,20 @@ func main() {
 }
 
 func run(args []string) error {
-	args, testBinary, testArgs := splitArgs(args)
 	fs := flag.NewFlagSet("vimto", flag.ContinueOnError)
-	kernel := fs.String("kernel", "", "`path` to the Linux image")
-	image := fs.String("image", "", "OCI `url:tag` containing a Linux image")
+	kernel := fs.String("vm.kernel", "", "`path` to the Linux image")
+	image := fs.String("vm.image", "", "OCI `url:tag` containing a Linux image")
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "Usage: %s [flags] [--] </path/to/binary> [flags of binary]\n", fs.Name())
+		fmt.Fprintln(fs.Output())
+		fs.PrintDefaults()
+	}
+
+	if len(args) > 0 && unix.Access(args[0], unix.X_OK) == nil {
+		// This is an invocation via go test -exec.
+		args = sortArgs(fs, args)
+	}
+
 	if err := fs.Parse(args); errors.Is(err, flag.ErrHelp) {
 		return nil
 	} else if err != nil {
@@ -69,22 +79,25 @@ func run(args []string) error {
 		return fmt.Errorf("need kernel")
 	}
 
-	if testBinary == "" {
-		return fmt.Errorf("need executable")
+	if fs.NArg() < 1 {
+		fs.Usage()
+		return fmt.Errorf("missing arguments")
 	}
+
+	args = fs.Args()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
 	cmd := &command{
 		Kernel: vmlinuz,
-		Args:   append([]string{testBinary}, testArgs...),
+		Args:   args,
 		Stdin:  os.Stdin,
 		Stdout: os.Stdout,
 		Stderr: os.Stderr,
 		SharedDirectories: []string{
 			// Ensure that the executable path is always available in the guest.
-			filepath.Dir(testBinary),
+			filepath.Dir(args[0]),
 		},
 	}
 
@@ -134,24 +147,46 @@ func findExecutable() (string, error) {
 	return path, nil
 }
 
-const flagPrefix = "-vm."
-
-func splitArgs(args []string) (vmArgs []string, testBinary string, testArgs []string) {
-	if len(args) < 1 || unix.Access(args[0], unix.X_OK) != nil {
-		// First argument needs to be an executable for this to be a `go test`
-		// invocation.
-		return args, "", nil
+func sortArgs(fs *flag.FlagSet, args []string) []string {
+	type boolFlag interface {
+		IsBoolFlag() bool
 	}
 
-	testBinary = args[0]
+	testArgs := []string{args[0]}
+	var flags []string
+	var nextArgIsValue bool
 	for _, arg := range args[1:] {
-		if strings.HasPrefix(arg, flagPrefix) {
-			// TODO: Doesn't handle space separated flags.
-			vmArgs = append(vmArgs, "-"+strings.TrimPrefix(arg, flagPrefix))
-		} else {
-			testArgs = append(testArgs, arg)
+		if nextArgIsValue {
+			flags = append(flags, arg)
+			nextArgIsValue = false
+			continue
 		}
+
+		if !strings.HasPrefix(arg, "-") {
+			// This is not a flag. Pretend it's an argument.
+			testArgs = append(testArgs, arg)
+			continue
+		}
+
+		name, _, found := strings.Cut(arg[1:], "=")
+		def := fs.Lookup(name)
+		if def == nil {
+			// Not a flag we recognise.
+			testArgs = append(testArgs, arg)
+			continue
+		}
+
+		flags = append(flags, arg)
+		if found {
+			// We have already appended the value via arg.
+			continue
+		} else if bf, ok := def.Value.(boolFlag); ok && bf.IsBoolFlag() {
+			// Boolean flags don't require a value.
+			continue
+		}
+
+		nextArgIsValue = true
 	}
 
-	return
+	return append(flags, testArgs...)
 }
