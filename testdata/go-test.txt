@@ -4,6 +4,9 @@ stdout TestSuccess
 ! exec go test -exec vimto -run Failure -vm.kernel ${PKG}/testdata/vmlinuz .
 stdout TestFailure
 
+exec go test -exec vimto -run Success -vm.kernel=${PKG}/testdata/vmlinuz -coverprofile=cover.out .
+exists cover.out
+
 -- go.mod --
 
 module test
