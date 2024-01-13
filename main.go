@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	docker "github.com/docker/docker/client"
 	"golang.org/x/sys/unix"
 )
 
@@ -52,15 +53,21 @@ func run(args []string) error {
 	}
 
 	var vmlinuz string
-	var cache ociCache
 	if *image != "" {
+		cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+		if err != nil {
+			return fmt.Errorf("create docker client: %w", err)
+		}
+		defer cli.Close()
+
+		cache := imageCache{cli, os.TempDir()}
 		oi, err := cache.Acquire(context.Background(), *image)
 		if err != nil {
 			return fmt.Errorf("retrieve kernel from OCI image: %w", err)
 		}
 		defer oi.Release()
 
-		vmlinuz = oi.Kernel
+		vmlinuz = filepath.Join(oi.Directory, "boot/vmlinuz")
 	}
 
 	if *kernel != "" {
@@ -68,15 +75,13 @@ func run(args []string) error {
 			return fmt.Errorf("conflicting kernel source")
 		}
 
-		if _, err := os.Stat(*kernel); err != nil {
-			return fmt.Errorf("file %q doesn't exist", *kernel)
-		}
-
 		vmlinuz = *kernel
 	}
 
 	if vmlinuz == "" {
 		return fmt.Errorf("need kernel")
+	} else if _, err := os.Stat(vmlinuz); err != nil {
+		return fmt.Errorf("missing kernel: %w", err)
 	}
 
 	if fs.NArg() < 1 {
