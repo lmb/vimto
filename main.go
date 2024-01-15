@@ -106,7 +106,7 @@ func run(args []string) error {
 		},
 	}
 
-	err := cmd.execInVM(ctx)
+	err := cmd.Start(ctx)
 	if err != nil {
 		return err
 	}

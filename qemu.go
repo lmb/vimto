@@ -45,7 +45,7 @@ type command struct {
 	fakeStdin *os.File
 }
 
-func (cmd *command) execInVM(ctx context.Context) (err error) {
+func (cmd *command) Start(ctx context.Context) (err error) {
 	closeOnError := func(c io.Closer) {
 		if err != nil {
 			c.Close()
