@@ -31,10 +31,14 @@ func main() {
 	}
 }
 
+type config struct {
+	Kernel string
+}
+
 func run(args []string) error {
+	var cfg config
 	fs := flag.NewFlagSet("vimto", flag.ContinueOnError)
-	kernel := fs.String("vm.kernel", "", "`path` to the Linux image")
-	image := fs.String("vm.image", "", "OCI `url:tag` containing a Linux image")
+	fs.StringVar(&cfg.Kernel, "vm.kernel", "", "`path or url` to the Linux image")
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Usage: %s [flags] [--] </path/to/binary> [flags of binary]\n", fs.Name())
 		fmt.Fprintln(fs.Output())
@@ -53,7 +57,13 @@ func run(args []string) error {
 	}
 
 	var vmlinuz string
-	if *image != "" {
+	if cfg.Kernel == "" {
+		return fmt.Errorf("specify a kernel via -vm.kernel")
+	} else if _, err := os.Stat(cfg.Kernel); err == nil {
+		// Kernel is a file on disk.
+		vmlinuz = cfg.Kernel
+	} else {
+		// Assume that kernel is a reference to an image.
 		cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
 		if err != nil {
 			return fmt.Errorf("create docker client: %w", err)
@@ -61,27 +71,16 @@ func run(args []string) error {
 		defer cli.Close()
 
 		cache := imageCache{cli, os.TempDir()}
-		oi, err := cache.Acquire(context.Background(), *image)
+		oi, err := cache.Acquire(context.Background(), cfg.Kernel)
 		if err != nil {
 			return fmt.Errorf("retrieve kernel from OCI image: %w", err)
 		}
 		defer oi.Release()
 
 		vmlinuz = filepath.Join(oi.Directory, "boot/vmlinuz")
-	}
-
-	if *kernel != "" {
-		if vmlinuz != "" {
-			return fmt.Errorf("conflicting kernel source")
+		if _, err := os.Stat(vmlinuz); err != nil {
+			return fmt.Errorf("image is missing kernel: %w", err)
 		}
-
-		vmlinuz = *kernel
-	}
-
-	if vmlinuz == "" {
-		return fmt.Errorf("need kernel")
-	} else if _, err := os.Stat(vmlinuz); err != nil {
-		return fmt.Errorf("missing kernel: %w", err)
 	}
 
 	if fs.NArg() < 1 {
