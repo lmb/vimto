@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,17 @@ func TestExecutable(t *testing.T) {
 
 	e := script.NewEngine()
 	e.Cmds["vimto"] = script.Program("vimto", nil, time.Second)
+	e.Cmds["config"] = script.Command(script.CmdUsage{
+		Summary: "Write to the configuration file",
+		Args:    "kernel",
+	}, func(s *script.State, args ...string) (script.WaitFunc, error) {
+		if len(args) != 1 {
+			return nil, fmt.Errorf("expected one argument, got %d", len(args))
+		}
+
+		contents := fmt.Sprintf(`kernel="%s"`, args[0])
+		return nil, os.WriteFile(filepath.Join(s.Getwd(), configFileName), []byte(contents), 0644)
+	})
 
 	var env []string
 	for _, v := range os.Environ() {

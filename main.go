@@ -31,12 +31,6 @@ func main() {
 	}
 }
 
-type config struct {
-	Kernel string
-	Memory string
-	SMP    string
-}
-
 func run(args []string) error {
 	var cfg config
 	fs := flag.NewFlagSet("vimto", flag.ContinueOnError)
@@ -47,6 +41,10 @@ func run(args []string) error {
 		fmt.Fprintf(fs.Output(), "Usage: %s [flags] [--] </path/to/binary> [flags of binary]\n", fs.Name())
 		fmt.Fprintln(fs.Output())
 		fs.PrintDefaults()
+	}
+
+	if err := parseConfigFromTOML(".", &cfg); err != nil {
+		return fmt.Errorf("read config: %w", err)
 	}
 
 	if len(args) > 0 && filepath.IsAbs(args[0]) && unix.Access(args[0], unix.X_OK) == nil {

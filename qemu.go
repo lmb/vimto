@@ -31,7 +31,9 @@ type command struct {
 	// SMP is passed verbatim as the QEMU -smp flag.
 	SMP string
 	// Arguments spassed to the function executed in the VM.
-	Args              []string
+	Args []string
+	// Env works like exec.Cmd.Env.
+	Env               []string
 	Stdin             io.Reader
 	Stdout            io.Writer
 	Stderr            io.Writer
@@ -232,6 +234,8 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	cmd.tasks.Go(func() error {
 		defer control.Close()
 
+		// TODO: Add cmd.Env to the mix. This should also coincide with using
+		// the correct user in the VM.
 		exec := execCommand{
 			cmd.Args,
 			mountTags,

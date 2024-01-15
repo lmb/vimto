@@ -3,6 +3,7 @@ module lmb.io/vimto
 go 1.21
 
 require (
+	github.com/BurntSushi/toml v1.3.2
 	github.com/docker/docker v24.0.7+incompatible
 	github.com/go-quicktest/qt v1.101.0
 	github.com/u-root/u-root v0.11.0

@@ -1,17 +1,28 @@
-exec go test -exec vimto -run Success -vm.kernel=${PKG}/testdata/vmlinuz -v .
+config ${PKG}/testdata/vmlinuz
+
+# We can execute a test, with the kernel being read from the config. Exit status
+# is forwarded correctly.
+exec go test -exec vimto -run Success -v .
 stdout TestSuccess
 
-exec go test -exec vimto -run Success -vm.kernel=${PKG}/testdata/vmlinuz -vm.smp 2 -v .
-stdout TestSuccess
-
-exec go test -exec vimto -run Success -vm.kernel=${PKG}/testdata/vmlinuz -vm.memory 96M -v .
-stdout TestSuccess
-
-! exec go test -exec vimto -run Failure -vm.kernel ${PKG}/testdata/vmlinuz .
+! exec go test -exec vimto -run Failure .
 stdout TestFailure
 
-exec go test -exec vimto -run Success -vm.kernel=${PKG}/testdata/vmlinuz -coverprofile=cover.out .
+# Flag overrides config file.
+! exec go test -exec vimto -vm.kernel ./bogus
+
+# We can pass various command line arguments. Include flags which contain
+# their value separated with a '='.
+exec go test -exec vimto -run Success -vm.smp 2 .
+exec go test -exec vimto -run Success -vm.smp=2 .
+exec go test -exec vimto -run Success -vm.memory 96M .
+
+# Running a test with coverage enabled works.
+exec go test -exec vimto -run Success -coverprofile=cover.out .
 exists cover.out
+
+# Running a test with race enabled works.
+exec go test -exec vimto -run Success -race .
 
 -- go.mod --
 
