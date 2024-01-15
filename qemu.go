@@ -507,7 +507,7 @@ type p9Root struct {
 func (p9r *p9Root) Cmdline() []string {
 	return []string{
 		// Need security_model=none due to https://gitlab.com/qemu-project/qemu/-/issues/173
-		"-fsdev", fmt.Sprintf("local,id=rootdrv,path=%s,security_model=none,multidevs=remap", p9r.Path),
+		"-fsdev", fmt.Sprintf("local,id=rootdrv,path=%s,readonly=on,security_model=none,multidevs=remap", p9r.Path),
 		"-device", "virtio-9p-pci,fsdev=rootdrv,mount_tag=/dev/root",
 	}
 }
