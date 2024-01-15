@@ -1,6 +1,12 @@
 exec go test -exec vimto -run Success -vm.kernel=${PKG}/testdata/vmlinuz -v .
 stdout TestSuccess
 
+exec go test -exec vimto -run Success -vm.kernel=${PKG}/testdata/vmlinuz -vm.smp 2 -v .
+stdout TestSuccess
+
+exec go test -exec vimto -run Success -vm.kernel=${PKG}/testdata/vmlinuz -vm.memory 96M -v .
+stdout TestSuccess
+
 ! exec go test -exec vimto -run Failure -vm.kernel ${PKG}/testdata/vmlinuz .
 stdout TestFailure
 

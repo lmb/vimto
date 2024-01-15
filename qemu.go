@@ -26,6 +26,10 @@ const p9RootTag = "/dev/root"
 // Mirrors exec.Cmd.
 type command struct {
 	Kernel string
+	// Memory to give to the VM. Passed verbatim as the QEMU -m flag.
+	Memory string
+	// SMP is passed verbatim as the QEMU -smp flag.
+	SMP string
 	// Arguments spassed to the function executed in the VM.
 	Args              []string
 	Stdin             io.Reader
@@ -94,8 +98,9 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 			"-display", "none",
 			"-enable-kvm",
 			"-cpu", "host",
-			"-m", "768", // TODO: Configurable
 			"-chardev", "stdio,id=stdio",
+			"-m", cmd.Memory,
+			"-smp", cmd.SMP,
 		},
 		qemu.VirtioRandom{},
 		readOnlyRootfs{},

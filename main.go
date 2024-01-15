@@ -33,12 +33,16 @@ func main() {
 
 type config struct {
 	Kernel string
+	Memory string
+	SMP    string
 }
 
 func run(args []string) error {
 	var cfg config
 	fs := flag.NewFlagSet("vimto", flag.ContinueOnError)
 	fs.StringVar(&cfg.Kernel, "vm.kernel", "", "`path or url` to the Linux image")
+	fs.StringVar(&cfg.Memory, "vm.memory", "size=128M", "memory to give to the VM")
+	fs.StringVar(&cfg.SMP, "vm.smp", "cpus=1", "")
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Usage: %s [flags] [--] </path/to/binary> [flags of binary]\n", fs.Name())
 		fmt.Fprintln(fs.Output())
@@ -98,6 +102,8 @@ func run(args []string) error {
 
 	cmd := &command{
 		Kernel: vmlinuz,
+		Memory: cfg.Memory,
+		SMP:    cfg.SMP,
 		Args:   append([]string{exe}, fs.Args()[1:]...),
 		Stdin:  os.Stdin,
 		Stdout: os.Stdout,
