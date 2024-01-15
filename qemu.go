@@ -91,14 +91,10 @@ func (cmd *command) execInVM(ctx context.Context) (err error) {
 
 	devices := []qemu.Device{
 		qemu.ArbitraryArgs{
+			"-nodefaults",
+			"-display", "none",
 			"-enable-kvm",
 			"-cpu", "host",
-			"-parallel", "none", // TODO: Needed?
-			"-net", "none",
-			"-vga", "none",
-			"-display", "none",
-			"-serial", "none",
-			"-monitor", "none",
 			"-m", "768", // TODO: Configurable
 			"-chardev", "stdio,id=stdio",
 		},
