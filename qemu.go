@@ -26,8 +26,7 @@ const p9RootTag = "/dev/root"
 // Mirrors exec.Cmd.
 type command struct {
 	Kernel string
-	// Arguments spassed to the init process. Contrary to exec.Cmd doesn't
-	// contain Init in Args[0].
+	// Arguments spassed to the function executed in the VM.
 	Args              []string
 	Stdin             io.Reader
 	Stdout            io.Writer

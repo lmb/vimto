@@ -41,7 +41,7 @@ func run(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	if len(args) > 0 && unix.Access(args[0], unix.X_OK) == nil {
+	if len(args) > 0 && filepath.IsAbs(args[0]) && unix.Access(args[0], unix.X_OK) == nil {
 		// This is an invocation via go test -exec.
 		args = sortArgs(fs, args)
 	}
@@ -89,25 +89,27 @@ func run(args []string) error {
 		return fmt.Errorf("missing arguments")
 	}
 
-	args = fs.Args()
+	exe, err := exec.LookPath(fs.Arg(0))
+	if err != nil {
+		return err
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
 	cmd := &command{
 		Kernel: vmlinuz,
-		Args:   args,
+		Args:   append([]string{exe}, fs.Args()[1:]...),
 		Stdin:  os.Stdin,
 		Stdout: os.Stdout,
 		Stderr: os.Stderr,
 		SharedDirectories: []string{
 			// Ensure that the executable path is always available in the guest.
-			filepath.Dir(args[0]),
+			filepath.Dir(exe),
 		},
 	}
 
-	err := cmd.Start(ctx)
-	if err != nil {
+	if err := cmd.Start(ctx); err != nil {
 		return err
 	}
 
