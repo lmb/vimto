@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/BurntSushi/toml"
 	"github.com/go-quicktest/qt"
 )
 
@@ -79,7 +80,13 @@ func TestFindConfigFile(t *testing.T) {
 	qt.Assert(t, qt.IsNil(err))
 	f.Close()
 	qt.Assert(t, qt.Equals(f.Name(), rootCfg))
+}
 
+func TestWriteConfig(t *testing.T) {
+	f, err := os.Create("testdata/default.toml")
+	qt.Assert(t, qt.IsNil(err))
+	defer f.Close()
+	qt.Assert(t, qt.IsNil(toml.NewEncoder(f).Encode(defaultConfig)))
 }
 
 func mustWriteConfig(tb testing.TB, dir, contents string) string {

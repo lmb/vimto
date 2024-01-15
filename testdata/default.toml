@@ -1,0 +1,4 @@
+kernel = ""
+memory = "size=128M"
+smp = "cpus=1"
+sudo = false

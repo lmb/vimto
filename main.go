@@ -34,10 +34,10 @@ func main() {
 func run(args []string) error {
 	var cfg config
 	fs := flag.NewFlagSet("vimto", flag.ContinueOnError)
-	fs.StringVar(&cfg.Kernel, "vm.kernel", "", "`path or url` to the Linux image")
-	fs.StringVar(&cfg.Memory, "vm.memory", "size=128M", "memory to give to the VM")
-	fs.StringVar(&cfg.SMP, "vm.smp", "cpus=1", "")
-	fs.BoolVar(&cfg.Sudo, "vm.sudo", false, "execute as root")
+	fs.StringVar(&cfg.Kernel, "vm.kernel", defaultConfig.Kernel, "`path or url` to the Linux image")
+	fs.StringVar(&cfg.Memory, "vm.memory", defaultConfig.Memory, "memory to give to the VM")
+	fs.StringVar(&cfg.SMP, "vm.smp", defaultConfig.SMP, "")
+	fs.BoolVar(&cfg.Sudo, "vm.sudo", defaultConfig.Sudo, "execute as root")
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Usage: %s [flags] [--] </path/to/binary> [flags of binary]\n", fs.Name())
 		fmt.Fprintln(fs.Output())

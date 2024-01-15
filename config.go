@@ -19,6 +19,11 @@ type config struct {
 	Sudo   bool   `toml:"sudo"`
 }
 
+var defaultConfig = &config{
+	Memory: "size=128M",
+	SMP:    "cpus=1",
+}
+
 const configFileName = ".vimto.toml"
 
 var errUnrecognisedKeys = errors.New("unrecognised key(s)")
