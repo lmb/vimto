@@ -1,0 +1,25 @@
+config ${PKG}/testdata/vmlinuz
+
+# We can execute binary, with the kernel being read from the config. Exit status
+# is forwarded correctly.
+vimto true
+! vimto false
+
+# Flag overrides config file.
+! vimto -vm.kernel ./bogus true
+
+# Output is forwarded correctly.
+vimto sh -c 'echo testing'
+stdout testing
+
+vimto sh -c 'echo testing >&2'
+stdout testing # we don't have separate stderr at the moment.
+
+# We can pass various command line arguments. Include flags which contain
+# their value separated with a '='.
+vimto -vm.smp 2 true
+vimto -vm.memory 96M true
+
+# Binaries are executed with the appropriate user.
+vimto -- id -u
+stdout ^${UID}$

@@ -20,7 +20,7 @@ func main() {
 
 	var err error
 	if os.Getpid() == 1 {
-		err = minimalInit(realSyscaller{}, args, executeTest)
+		err = minimalInit(realSyscaller{}, args)
 	} else {
 		err = run(args)
 	}
@@ -102,7 +102,8 @@ func run(args []string) error {
 		Kernel: vmlinuz,
 		Memory: cfg.Memory,
 		SMP:    cfg.SMP,
-		Args:   append([]string{exe}, fs.Args()[1:]...),
+		Path:   exe,
+		Args:   fs.Args(),
 		Stdin:  os.Stdin,
 		Stdout: os.Stdout,
 		Stderr: os.Stderr,
@@ -121,14 +122,6 @@ func run(args []string) error {
 	}
 
 	return nil
-}
-
-func executeTest(env *env) error {
-	cmd := exec.Command(env.Args[0], env.Args[1:]...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
 }
 
 func findExecutable() (string, error) {

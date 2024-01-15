@@ -30,13 +30,19 @@ type command struct {
 	Memory string
 	// SMP is passed verbatim as the QEMU -smp flag.
 	SMP string
-	// Arguments spassed to the function executed in the VM.
+	// Path to the binary to execute.
+	Path string
+	// Arguments spassed to the binary. The first element is conventionally Path.
 	Args []string
+	// User id and group id to execute the command under. Defaults to the
+	// current user and group.
+	Uid, Gid int
 	// Env works like exec.Cmd.Env.
-	Env               []string
-	Stdin             io.Reader
-	Stdout            io.Writer
-	Stderr            io.Writer
+	Env    []string
+	Stdin  io.Reader
+	Stdout io.Writer
+	Stderr io.Writer
+
 	SerialPorts       map[string]*os.File
 	SharedDirectories []string
 
@@ -149,6 +155,27 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		})
 	}
 
+	execCmd := execCommand{
+		cmd.Path,
+		cmd.Args,
+		cmd.Uid, cmd.Gid,
+		cmd.Env,
+		mountTags,
+	}
+
+	if execCmd.Uid == 0 {
+		execCmd.Uid = os.Geteuid()
+	}
+
+	if execCmd.Gid == 0 {
+		execCmd.Gid = os.Getegid()
+	}
+
+	if execCmd.Env == nil {
+		// TODO: Might have to do some filtering here.
+		execCmd.Env = os.Environ()
+	}
+
 	init, err := findExecutable()
 	if err != nil {
 		return err
@@ -234,15 +261,8 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	cmd.tasks.Go(func() error {
 		defer control.Close()
 
-		// TODO: Add cmd.Env to the mix. This should also coincide with using
-		// the correct user in the VM.
-		exec := execCommand{
-			cmd.Args,
-			mountTags,
-		}
-
 		enc := json.NewEncoder(control)
-		if err := enc.Encode(&exec); err != nil {
+		if err := enc.Encode(&execCmd); err != nil {
 			return err
 		}
 
@@ -284,7 +304,10 @@ func (cmd *command) Wait() error {
 }
 
 type execCommand struct {
+	Path      string
 	Args      []string
+	Uid, Gid  int
+	Env       []string
 	MountTags map[string]string // map[tag]path
 }
 
@@ -529,11 +552,12 @@ type p9SharedDirectory struct {
 	ID   fsdev
 	Tag  string
 	Path string
+	// TODO: ReadOnly support.
 }
 
 func (p9sd *p9SharedDirectory) Cmdline() []string {
 	return []string{
-		"-fsdev", fmt.Sprintf("local,id=%s,path=%s,security_model=mapped,multidevs=remap", p9sd.ID, p9sd.Path),
+		"-fsdev", fmt.Sprintf("local,id=%s,path=%s,security_model=none,multidevs=remap", p9sd.ID, p9sd.Path),
 		"-device", fmt.Sprintf("virtio-9p-pci,fsdev=%s,mount_tag=%s", p9sd.ID, p9sd.Tag),
 	}
 }

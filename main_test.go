@@ -60,6 +60,7 @@ func TestExecutable(t *testing.T) {
 	pwd, err := os.Getwd()
 	qt.Assert(t, qt.IsNil(err))
 	env = append(env, "PKG="+pwd)
+	env = append(env, fmt.Sprintf("UID=%d", os.Geteuid()))
 
 	scripttest.Test(t, context.Background(), e, env, "testdata/*.txt")
 }

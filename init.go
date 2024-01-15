@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -76,12 +78,7 @@ func (mt mountTable) pathIsBelowMount(path string) (string, bool) {
 	return "", false
 }
 
-type env struct {
-	Args  []string
-	Ports map[string]string
-}
-
-func minimalInit(sys syscaller, args []string, fn func(*env) error) error {
+func minimalInit(sys syscaller, args []string) error {
 	err := func() error {
 		if err := earlyMounts.mountAll(sys); err != nil {
 			return fmt.Errorf("early mount: %w", err)
@@ -140,11 +137,12 @@ func minimalInit(sys syscaller, args []string, fn func(*env) error) error {
 			fmt.Println("Mounting", path)
 
 			if fs, ok := earlyMounts.pathIsBelowMount(path); ok && fs == "tmpfs" {
-				if err := os.MkdirAll(path, 0644); err != nil {
+				if err := os.MkdirAll(path, 0755); err != nil {
 					return fmt.Errorf("mount %q: %w", path, err)
 				}
 			}
 
+			// TODO: Investigate dfltuid, dfltgid, noxattr options.
 			err = sys.mount(&mountPoint{
 				tag, path,
 				"9p",
@@ -168,8 +166,24 @@ func minimalInit(sys syscaller, args []string, fn func(*env) error) error {
 			return fmt.Errorf("replace stdin: %w", err)
 		}
 
+		proc := exec.Cmd{
+			Path:   cmd.Path,
+			Args:   cmd.Args,
+			Env:    cmd.Env,
+			Stdin:  os.Stdin,
+			Stdout: os.Stdout,
+			Stderr: os.Stderr,
+			SysProcAttr: &syscall.SysProcAttr{
+				Credential: &syscall.Credential{
+					Uid:         uint32(cmd.Uid),
+					Gid:         uint32(cmd.Gid),
+					NoSetGroups: true,
+				},
+			},
+		}
+
 		var result execResult
-		if err = fn(&env{cmd.Args, ports}); err != nil {
+		if err = proc.Run(); err != nil {
 			result.Error = err.Error()
 			if result.Error == "" {
 				result.Error = fmt.Sprintf("nil error of type %T", err)
