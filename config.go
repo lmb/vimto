@@ -16,6 +16,7 @@ type config struct {
 	Kernel string `toml:"kernel"`
 	Memory string `toml:"memory"`
 	SMP    string `toml:"smp"`
+	Sudo   bool   `toml:"sudo"`
 }
 
 const configFileName = ".vimto.toml"

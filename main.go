@@ -37,6 +37,7 @@ func run(args []string) error {
 	fs.StringVar(&cfg.Kernel, "vm.kernel", "", "`path or url` to the Linux image")
 	fs.StringVar(&cfg.Memory, "vm.memory", "size=128M", "memory to give to the VM")
 	fs.StringVar(&cfg.SMP, "vm.smp", "cpus=1", "")
+	fs.BoolVar(&cfg.Sudo, "vm.sudo", false, "execute as root")
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Usage: %s [flags] [--] </path/to/binary> [flags of binary]\n", fs.Name())
 		fmt.Fprintln(fs.Output())
@@ -98,12 +99,20 @@ func run(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
+	uid := os.Geteuid()
+	gid := os.Getegid()
+	if cfg.Sudo {
+		uid, gid = 0, 0
+	}
+
 	cmd := &command{
 		Kernel: vmlinuz,
 		Memory: cfg.Memory,
 		SMP:    cfg.SMP,
 		Path:   exe,
 		Args:   fs.Args(),
+		Uid:    uid,
+		Gid:    gid,
 		Stdin:  os.Stdin,
 		Stdout: os.Stdout,
 		Stderr: os.Stderr,

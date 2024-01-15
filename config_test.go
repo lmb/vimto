@@ -12,7 +12,7 @@ import (
 func TestParseConfigFromTOML(t *testing.T) {
 	tmp := t.TempDir()
 
-	want := &config{"A", "B", "C"}
+	want := &config{"A", "B", "C", false}
 
 	have := *want
 	qt.Assert(t, qt.IsNil(parseConfigFromTOML(tmp, &have)))
@@ -29,7 +29,7 @@ memory = "bar"
 
 	qt.Assert(t, qt.IsNil(parseConfigFromTOML(tmp, &have)))
 	qt.Assert(t, qt.DeepEquals(&have, &config{
-		"foo", "bar", want.SMP,
+		"foo", "bar", want.SMP, want.Sudo,
 	}))
 }
 

@@ -23,3 +23,6 @@ vimto -vm.memory 96M true
 # Binaries are executed with the appropriate user.
 vimto -- id -u
 stdout ^${UID}$
+
+vimto -vm.sudo -- id -u
+stdout ^0$

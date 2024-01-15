@@ -34,8 +34,7 @@ type command struct {
 	Path string
 	// Arguments spassed to the binary. The first element is conventionally Path.
 	Args []string
-	// User id and group id to execute the command under. Defaults to the
-	// current user and group.
+	// User id and group id to execute the command under.
 	Uid, Gid int
 	// Env works like exec.Cmd.Env.
 	Env    []string
@@ -68,6 +67,13 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 
 	if cmd.cmd != nil {
 		return errors.New("qemu: already started")
+	}
+
+	if err := unix.Access(cmd.Path, unix.R_OK); err != nil && cmd.Stderr != nil {
+		// QEMU limitation: the 9p implementation needs to be able to read the
+		// executable to be able to execute it in the VM.
+		// TODO: Might be able to avoid this using CAP_DAC_OVERRIDE or similar.
+		fmt.Fprintf(cmd.Stderr, "%s is not readable, execution might fail with %q\n", cmd.Path, unix.EACCES)
 	}
 
 	cds := &chardevs{}
@@ -161,14 +167,6 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		cmd.Uid, cmd.Gid,
 		cmd.Env,
 		mountTags,
-	}
-
-	if execCmd.Uid == 0 {
-		execCmd.Uid = os.Geteuid()
-	}
-
-	if execCmd.Gid == 0 {
-		execCmd.Gid = os.Getegid()
 	}
 
 	if execCmd.Env == nil {
