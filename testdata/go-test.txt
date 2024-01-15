@@ -18,6 +18,10 @@ exists cover.out
 # Running a test with race enabled works.
 exec go test -exec vimto -run Success -race .
 
+# TODO: -exec allows injecting arguments, which is not supported.
+# Add a test once we know what to do with this.
+# exec go test -exec "vimto arg" -run Success .
+
 -- go.mod --
 
 module test
