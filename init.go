@@ -263,23 +263,6 @@ func minimalInit(sys syscaller, args []string) error {
 	return sys.reboot(unix.LINUX_REBOOT_CMD_POWER_OFF)
 }
 
-func replaceFdWithFile(sys syscaller, fd int, file *os.File) error {
-	raw, err := file.SyscallConn()
-	if err != nil {
-		return err
-	}
-
-	var dupErr error
-	err = raw.Control(func(replacement uintptr) {
-		// dup2 overwrites fd with the newly opened file.
-		dupErr = sys.dup2(int(replacement), fd)
-	})
-	if err != nil {
-		return err
-	}
-	return dupErr
-}
-
 // Read the names of virtio ports from /sys.
 //
 // Based on https://gitlab.com/qemu-project/qemu/-/issues/506

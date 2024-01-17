@@ -236,22 +236,3 @@ func secureJoin(base string, parts ...string) (string, error) {
 
 	return path, nil
 }
-
-func flock(f *os.File, how int) error {
-	sys, err := f.SyscallConn()
-	if err != nil {
-		return err
-	}
-
-	var flockErr error
-	err = sys.Control(func(fd uintptr) {
-		flockErr = unix.Flock(int(fd), how)
-	})
-	if err != nil {
-		return fmt.Errorf("control fd: %w", err)
-	}
-	if flockErr != nil {
-		return fmt.Errorf("flock: %w", err)
-	}
-	return nil
-}

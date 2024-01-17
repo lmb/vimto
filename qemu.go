@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
-	"syscall"
 	"time"
 
 	"github.com/u-root/u-root/pkg/qemu"
@@ -594,37 +593,4 @@ func (p9sd *p9SharedDirectory) Cmdline() []string {
 
 func (*p9SharedDirectory) KArgs() []string {
 	return nil
-}
-
-func unixSocketpair() (*os.File, *os.File, error) {
-	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM, 0)
-	if err != nil {
-		return nil, nil, fmt.Errorf("create unix socket pair: %w", err)
-	}
-
-	return os.NewFile(uintptr(fds[0]), ""), os.NewFile(uintptr(fds[1]), ""), nil
-}
-
-func fileIsDevZero(f *os.File) (bool, error) {
-	info, err := f.Stat()
-	if err != nil {
-		return false, err
-	}
-
-	fStat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return false, fmt.Errorf("GOOS not supported: %s", runtime.GOOS)
-	}
-
-	nullInfo, err := os.Stat(os.DevNull)
-	if err != nil {
-		return false, err
-	}
-
-	nullStat, ok := nullInfo.Sys().(*syscall.Stat_t)
-	if !ok {
-		return false, fmt.Errorf("GOOS not supported: %s", runtime.GOOS)
-	}
-
-	return fStat.Rdev == nullStat.Rdev, nil
 }
