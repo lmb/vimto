@@ -226,6 +226,7 @@ func minimalInit(sys syscaller, args []string) error {
 		proc := exec.Cmd{
 			Path:   cmd.Path,
 			Args:   cmd.Args,
+			Dir:    cmd.Dir,
 			Env:    cmd.Env,
 			Stdin:  os.Stdin,
 			Stdout: os.Stdout,

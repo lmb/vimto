@@ -10,7 +10,9 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"slices"
 	"syscall"
 	"time"
 
@@ -32,8 +34,11 @@ type command struct {
 	SMP string
 	// Path to the binary to execute.
 	Path string
-	// Arguments spassed to the binary. The first element is conventionally Path.
+	// Arguments passed to the binary. The first element is conventionally Path.
 	Args []string
+	// The directory to execute the binary in. Defaults to the current working
+	// directory.
+	Dir string
 	// User id and group id to execute the command under.
 	Uid, Gid int
 	// Env works like exec.Cmd.Env.
@@ -150,8 +155,34 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		virtioPorts.Chardevs[cds.addFile(port)] = name
 	}
 
+	dir := cmd.Dir
+	if dir == "" {
+		dir, err = os.Getwd()
+		if err != nil {
+			return err
+		}
+	}
+
+	// Ensure that the binary and the working directory are always available
+	// in the guest.
+	sharedDirectories := slices.Clone(cmd.SharedDirectories)
+	for _, dir := range []string{filepath.Dir(cmd.Path), dir} {
+		fstype, found := earlyMounts.pathIsBelowMount(dir)
+		if !found {
+			continue
+		}
+
+		if fstype != "tmpfs" {
+			return fmt.Errorf("directory %s is shadowed by %s mount in the guest", dir, fstype)
+		}
+
+		sharedDirectories = append(sharedDirectories, dir)
+	}
+	slices.Sort(sharedDirectories)
+	slices.Compact(sharedDirectories)
+
 	mountTags := make(map[string]string)
-	for i, path := range cmd.SharedDirectories {
+	for i, path := range sharedDirectories {
 		id := fmt.Sprintf("sd-9p-%d", i)
 		mountTags[id] = path
 		devices = append(devices, &p9SharedDirectory{
@@ -164,6 +195,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	execCmd := execCommand{
 		cmd.Path,
 		cmd.Args,
+		dir,
 		cmd.Uid, cmd.Gid,
 		cmd.Env,
 		mountTags,
@@ -304,6 +336,7 @@ func (cmd *command) Wait() error {
 type execCommand struct {
 	Path      string
 	Args      []string
+	Dir       string
 	Uid, Gid  int
 	Env       []string
 	MountTags map[string]string // map[tag]path

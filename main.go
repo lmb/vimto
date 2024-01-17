@@ -116,10 +116,6 @@ func run(args []string) error {
 		Stdin:  os.Stdin,
 		Stdout: os.Stdout,
 		Stderr: os.Stderr,
-		SharedDirectories: []string{
-			// Ensure that the executable path is always available in the guest.
-			filepath.Dir(exe),
-		},
 	}
 
 	if err := cmd.Start(ctx); err != nil {
