@@ -10,36 +10,21 @@ import (
 )
 
 func replaceFdWithFile(sys syscaller, fd int, file *os.File) error {
-	raw, err := file.SyscallConn()
-	if err != nil {
-		return err
-	}
-
-	var dupErr error
-	err = raw.Control(func(replacement uintptr) {
+	_, err := fileControl(file, func(replacement uintptr) (struct{}, error) {
 		// dup2 overwrites fd with the newly opened file.
-		dupErr = sys.dup2(int(replacement), fd)
+		return struct{}{}, sys.dup2(int(replacement), fd)
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("dup2: %w", err)
 	}
-	return dupErr
+	return nil
 }
 
 func flock(f *os.File, how int) error {
-	sys, err := f.SyscallConn()
-	if err != nil {
-		return err
-	}
-
-	var flockErr error
-	err = sys.Control(func(fd uintptr) {
-		flockErr = unix.Flock(int(fd), how)
+	_, err := fileControl(f, func(fd uintptr) (struct{}, error) {
+		return struct{}{}, unix.Flock(int(fd), how)
 	})
 	if err != nil {
-		return fmt.Errorf("control fd: %w", err)
-	}
-	if flockErr != nil {
 		return fmt.Errorf("flock: %w", err)
 	}
 	return nil
@@ -76,4 +61,25 @@ func fileIsDevZero(f *os.File) (bool, error) {
 	}
 
 	return fStat.Rdev == nullStat.Rdev, nil
+}
+
+func fileControl[T any](f *os.File, fn func(fd uintptr) (T, error)) (T, error) {
+	var result T
+	sys, err := f.SyscallConn()
+	if err != nil {
+		return result, err
+	}
+
+	var opErr error
+	err = sys.Control(func(fd uintptr) {
+		result, opErr = fn(fd)
+	})
+	if err != nil {
+		return result, fmt.Errorf("control fd: %w", err)
+	}
+	if opErr != nil {
+		return result, err
+	}
+
+	return result, nil
 }
