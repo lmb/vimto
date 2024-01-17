@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -43,6 +44,7 @@ type mountPoint struct {
 	fstype         string
 	options        string
 	flags          uintptr
+	required       bool
 }
 
 func (mp *mountPoint) String() string {
@@ -53,24 +55,73 @@ type mountTable []*mountPoint
 
 // Reference is https://github.com/systemd/systemd/blob/307b6a4dab21c854b141b53d9bdd05c8af0abc78/src/shared/mount-setup.c#L79
 var earlyMounts = mountTable{
-	{"sys", "/sys/", "sysfs", "", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV},
-	{"proc", "/proc/", "proc", "", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV},
-	{"tmpfs", "/tmp/", "tmpfs", "mode=0755", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV | unix.MS_STRICTATIME},
-	{"tmpfs", "/run/", "tmpfs", "mode=0755", unix.MS_NOSUID | unix.MS_NODEV | unix.MS_STRICTATIME},
+	{"sys", "/sys", "sysfs", "", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV, true},
+	{"proc", "/proc", "proc", "", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV, true},
+	{"devtmpfs", "/dev", "devtmpfs", "mode=0755", unix.MS_NOSUID | unix.MS_STRICTATIME, true},
+	{"securityfs", "/sys/kernel/security", "securityfs", "", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV, false},
+	{"tmpfs", "/dev/shm", "tmpfs", "mode=01777", unix.MS_NOSUID | unix.MS_NODEV | unix.MS_STRICTATIME, true},
+	{"tmpfs", "/tmp", "tmpfs", "mode=01777", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV | unix.MS_STRICTATIME, true},
+	{"tmpfs", "/run", "tmpfs", "mode=01777", unix.MS_NOSUID | unix.MS_NODEV | unix.MS_STRICTATIME, true},
+	{"cgroup2", "/sys/fs/cgroup", "cgroup2", "nsdelegate,memory_recursiveprot", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV, false},
+	{"bpf", "/sys/fs/bpf", "bpf", "mode=0700", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV, false},
+	{"debugfs", "/sys/kernel/debug", "debugfs", "", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV | unix.MS_RELATIME, false},
+	{"tracefs", "/sys/kernel/tracing", "tracefs", "", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV | unix.MS_RELATIME, false},
 }
 
-func (mt mountTable) mountAll(sys syscaller) error {
+// From man 2 statfs.
+var fsMagic = map[string]int64{
+	"bpf":        unix.BPF_FS_MAGIC,
+	"cgroup2":    unix.CGROUP2_SUPER_MAGIC,
+	"devtmpfs":   unix.TMPFS_MAGIC,
+	"proc":       unix.PROC_SUPER_MAGIC,
+	"securityfs": unix.SECURITYFS_MAGIC,
+	"sysfs":      unix.SYSFS_MAGIC,
+	"tmpfs":      unix.TMPFS_MAGIC,
+}
+
+// Mount all mount points contained in the table.
+//
+// Returns a list of optional mount points which failed to mount.
+func (mt mountTable) mountAll(sys syscaller) ([]*mountPoint, error) {
+	var ignored []*mountPoint
 	for _, mp := range mt {
+		if _, err := os.Stat(mp.target); errors.Is(err, unix.ENOENT) {
+			if err := os.MkdirAll(mp.target, 0755); err != nil {
+				return nil, fmt.Errorf("mount %s: %w", mp, err)
+			}
+		} else if err != nil {
+			return nil, fmt.Errorf("mount %s: %w", mp, err)
+		}
+
+		// TODO: Check /proc/self/mountinfo or similar whether the mountpoint
+		// already exists. statfs doesn't work since 9pfs will happily forward
+		// the statfs call to the host mount.
+
 		err := sys.mount(mp)
-		if err != nil {
-			return fmt.Errorf("failed to mount %s: %w", mp, err)
+		if errors.Is(err, unix.ENODEV) && !mp.required {
+			ignored = append(ignored, mp)
+			continue
+		} else if errors.Is(err, unix.EBUSY) {
+			// Already mounted. From man 2 mount:
+			//    An attempt was made to stack a new mount directly on top of an
+			//    existing mount point that was created in this mount namespace
+			//    with the same source and target.
+			continue
+		} else if err != nil {
+			return nil, fmt.Errorf("mount %s: %w", mp, err)
 		}
 	}
-	return nil
+	return ignored, nil
 }
 
 func (mt mountTable) pathIsBelowMount(path string) (string, bool) {
 	for _, mp := range mt {
+		target := mp.target
+		if len(target) > 0 && target[len(target)-1] != filepath.Separator {
+			target += string(filepath.Separator)
+		}
+
+		// TODO: This ignores case insensitivity of the filesystem.
 		if strings.HasPrefix(path, mp.target) {
 			return mp.fstype, true
 		}
@@ -80,8 +131,13 @@ func (mt mountTable) pathIsBelowMount(path string) (string, bool) {
 
 func minimalInit(sys syscaller, args []string) error {
 	err := func() error {
-		if err := earlyMounts.mountAll(sys); err != nil {
-			return fmt.Errorf("early mount: %w", err)
+		ignored, err := earlyMounts.mountAll(sys)
+		if err != nil {
+			return fmt.Errorf("mount: %w", err)
+		}
+
+		for _, mp := range ignored {
+			fmt.Fprintf(os.Stderr, "Mounting %s failed, ignoring\n", mp)
 		}
 
 		if len(args) != 2 {
@@ -148,6 +204,7 @@ func minimalInit(sys syscaller, args []string) error {
 				"9p",
 				"version=9p2000.L,trans=virtio,access=any",
 				0,
+				false, // ignored
 			})
 			if err != nil {
 				return fmt.Errorf("mount %q: %w", path, err)
