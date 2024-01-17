@@ -267,16 +267,15 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
+	defer closeOnError(console)
 
 	control, err := net.FileConn(controlHost)
 	if err != nil {
-		console.Close()
 		return err
 	}
+	defer closeOnError(control)
 
 	if err := proc.Start(); err != nil {
-		console.Close()
-		control.Close()
 		return err
 	}
 
