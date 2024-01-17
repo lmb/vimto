@@ -67,6 +67,25 @@ func TestSecureJoin(t *testing.T) {
 	}
 }
 
+func BenchmarkExtractImage(b *testing.B) {
+	cli := mustNewDockerClient(b)
+	id, err := fetchImage(context.Background(), cli, "busybox")
+	qt.Assert(b, qt.IsNil(err))
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		tmp := b.TempDir()
+		b.StartTimer()
+
+		extractImage(context.Background(), cli, id, tmp)
+
+		b.StopTimer()
+		os.RemoveAll(tmp)
+		b.StartTimer()
+	}
+}
+
 func mustNewDockerClient(tb testing.TB) *docker.Client {
 	tb.Helper()
 
