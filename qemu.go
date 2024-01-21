@@ -20,7 +20,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const p9RootTag = "/dev/root"
+const p9HostTag = "host"
+const p9OverlayTag = "overlay"
 
 // command is a binary to be executed under a different kernel.
 //
@@ -45,6 +46,8 @@ type command struct {
 	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
+	// A directory to overlay over the root filesystem.
+	RootOverlay string
 
 	SerialPorts       map[string]*os.File
 	SharedDirectories []string
@@ -125,7 +128,11 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		exitOnPanic{},
 		disablePS2Probing{},
 		disableRaidAutodetect{},
-		&p9Root{Path: "/"},
+		&p9SharedDirectory{
+			fsdev(p9HostTag),
+			p9HostTag,
+			"/",
+		},
 		// enableGDBServer{},
 		cds,
 		ports,
@@ -191,6 +198,20 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		})
 	}
 
+	var rootOverlay string
+	if cmd.RootOverlay != "" {
+		rootOverlay, err = filepath.Abs(cmd.RootOverlay)
+		if err != nil {
+			return err
+		}
+
+		devices = append(devices, &p9SharedDirectory{
+			fsdev(p9OverlayTag),
+			p9OverlayTag,
+			rootOverlay,
+		})
+	}
+
 	execCmd := execCommand{
 		cmd.Path,
 		cmd.Args,
@@ -209,10 +230,23 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
+	defer init.Close()
+
+	initramfs, err := os.CreateTemp("", "vimto-initrd")
+	if err != nil {
+		return err
+	}
+	defer initramfs.Close()
+	// TODO: Pass initramfs via fd.
+	// defer os.Remove(initramfs.Name())
+
+	if err = writeInitrd(initramfs, init); err != nil {
+		return err
+	}
 
 	// init has to go last since we stop processing of KArgs after.
-	devices = append(devices, initWithArgs{
-		init,
+	devices = append(devices, initramfsWithArgs{
+		initramfs.Name(),
 		[]string{stdioPortName, controlPortName},
 	})
 
@@ -256,6 +290,8 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	}
 
 	proc := exec.CommandContext(ctx, qemuArgs[0], qemuArgs[1:]...)
+	// proc.Path = "/usr/bin/strace"
+	proc.Args = append(proc.Args, "-d", "strace", "-D", "qemu.log")
 	proc.Stdin = stdin
 	proc.Stdout = cmd.Stdout
 	proc.Stderr = cmd.Stderr
@@ -354,7 +390,36 @@ func (i initWithArgs) Cmdline() []string {
 }
 
 func (i initWithArgs) KArgs() []string {
-	return append([]string{"init=" + i.path, "--"}, i.args...)
+	kargs := []string{"init=" + i.path, "--"}
+	for _, arg := range i.args {
+		if arg == "" {
+			kargs = append(kargs, `""`)
+		} else {
+			kargs = append(kargs, arg)
+		}
+	}
+	return kargs
+}
+
+type initramfsWithArgs struct {
+	path string
+	args []string
+}
+
+func (i initramfsWithArgs) Cmdline() []string {
+	return []string{"-initrd", i.path}
+}
+
+func (i initramfsWithArgs) KArgs() []string {
+	kargs := []string{"--"}
+	for _, arg := range i.args {
+		if arg == "" {
+			kargs = append(kargs, `""`)
+		} else {
+			kargs = append(kargs, arg)
+		}
+	}
+	return kargs
 }
 
 type chardev string

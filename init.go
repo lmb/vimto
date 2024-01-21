@@ -24,7 +24,11 @@ type syscaller interface {
 type realSyscaller struct{}
 
 func (rs realSyscaller) mount(mp *mountPoint) error {
-	return unix.Mount(mp.source, mp.target, mp.fstype, mp.flags, mp.options)
+	err := unix.Mount(mp.source, mp.target, mp.fstype, mp.flags, mp.options)
+	if err != nil {
+		return fmt.Errorf("mount %s: %w", mp.target, err)
+	}
+	return nil
 }
 
 func (rs realSyscaller) sync() {
@@ -75,6 +79,7 @@ var fsMagic = map[string]int64{
 	"devtmpfs":   unix.TMPFS_MAGIC,
 	"proc":       unix.PROC_SUPER_MAGIC,
 	"securityfs": unix.SECURITYFS_MAGIC,
+	"overlay":    unix.OVERLAYFS_SUPER_MAGIC,
 	"sysfs":      unix.SYSFS_MAGIC,
 	"tmpfs":      unix.TMPFS_MAGIC,
 }
@@ -131,6 +136,17 @@ func (mt mountTable) pathIsBelowMount(path string) (string, bool) {
 
 func minimalInit(sys syscaller, args []string) error {
 	err := func() error {
+		if len(args) != 2 {
+			return fmt.Errorf("expected three arguments, got %q", args)
+		}
+
+		if err := prepareRoot(); err != nil {
+			return err
+		}
+
+		stdioPort := args[0]
+		controlPort := args[1]
+
 		ignored, err := earlyMounts.mountAll(sys)
 		if err != nil {
 			return fmt.Errorf("mount: %w", err)
@@ -139,13 +155,6 @@ func minimalInit(sys syscaller, args []string) error {
 		for _, mp := range ignored {
 			fmt.Fprintf(os.Stderr, "Mounting %s failed, ignoring\n", mp)
 		}
-
-		if len(args) != 2 {
-			return fmt.Errorf("expected two arguments, got %q", args)
-		}
-
-		stdioPort := args[0]
-		controlPort := args[1]
 
 		ports, err := readVirtioPorts()
 		if err != nil {
@@ -175,21 +184,7 @@ func minimalInit(sys syscaller, args []string) error {
 			return fmt.Errorf("read command: %w", err)
 		}
 
-		tags, err := read9PMountTags()
-		if err != nil {
-			return fmt.Errorf("read 9p mount tags: %w", err)
-		}
-
-		for _, tag := range tags {
-			if tag == p9RootTag {
-				continue
-			}
-
-			path, ok := cmd.MountTags[tag]
-			if !ok {
-				return fmt.Errorf("missing path for 9p mount tag %q", tag)
-			}
-
+		for tag, path := range cmd.MountTags {
 			fmt.Println("Mounting", path)
 
 			if fs, ok := earlyMounts.pathIsBelowMount(path); ok && fs == "tmpfs" {
@@ -240,6 +235,9 @@ func minimalInit(sys syscaller, args []string) error {
 			},
 		}
 
+		ls("/lib")
+		printStat(cmd.Path)
+
 		var result execResult
 		if err = proc.Run(); err != nil {
 			result.Error = err.Error()
@@ -261,6 +259,107 @@ func minimalInit(sys syscaller, args []string) error {
 
 	sys.sync()
 	return sys.reboot(unix.LINUX_REBOOT_CMD_POWER_OFF)
+}
+
+func prepareRoot() error {
+	const (
+		hostDir    = "/host"
+		overlayDir = "/overlay"
+		rootDir    = "/merged"
+	)
+
+	for _, dir := range []string{hostDir, overlayDir, rootDir,
+		"/a", "/a/b", "/a/lib", "/a/lib/c",
+	} {
+		if err := os.Mkdir(dir, 0755); err != nil {
+			return err
+		}
+	}
+
+	err := unix.Mount(p9HostTag, hostDir, "9p", unix.MS_RDONLY, "version=9p2000.L,trans=virtio,access=any")
+	if err != nil {
+		return fmt.Errorf("host filesystem: %w", err)
+	}
+
+	root := hostDir
+	err = unix.Mount(p9OverlayTag, overlayDir, "9p", unix.MS_RDONLY, "version=9p2000.L,trans=virtio,access=any")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Not mounting overlay:", err)
+	} else {
+		root = rootDir
+
+		// TODO: Escape ':' ?
+		err := unix.Mount("overlay", rootDir, "overlay", 0,
+			// "lowerdir="+overlayDir+":/a")
+			"lowerdir="+overlayDir+":"+hostDir)
+		if err != nil {
+			return fmt.Errorf("root overlay: %w", err)
+		}
+
+		ls(rootDir)
+		println()
+		ls(rootDir + "/lib")
+		return errors.New("asd")
+	}
+
+	if err := os.Remove(initBin); err != nil {
+		return err
+	}
+
+	if err := os.Chdir(root); err != nil {
+		return err
+	}
+
+	err = unix.Mount(".", "/", "", unix.MS_MOVE, "")
+	if err != nil {
+		return fmt.Errorf("move root mount: %w", err)
+	}
+
+	if err := unix.Chroot("."); err != nil {
+		return fmt.Errorf("chroot: %w", err)
+	}
+
+	if err := unix.Chdir("."); err != nil {
+		return fmt.Errorf("chdir: %w", err)
+	}
+
+	return nil
+}
+
+func climb(dir string) {
+	for p := dir; p != "/"; p = filepath.Dir(p) {
+		info, err := os.Stat(p)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			break
+		}
+		fmt.Println(info.Mode(), info.Name())
+	}
+}
+
+func ls(dir string) {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
+	}
+	for _, ent := range ents {
+		info, err := ent.Info()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			continue
+		}
+		fmt.Println(info.Mode(), info.Name())
+	}
+}
+
+func printStat(file string) {
+	info, err := os.Stat(file)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
+	}
+	fmt.Println(info.Mode(), info.Name())
 }
 
 // Read the names of virtio ports from /sys.

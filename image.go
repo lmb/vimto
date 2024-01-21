@@ -15,6 +15,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const imageKernelPath = "boot/vmlinuz"
+
 // imageCache ensures that multiple invocations of vimto don't download the
 // same images over and over again.
 //
