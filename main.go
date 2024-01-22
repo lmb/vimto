@@ -59,13 +59,18 @@ func run(args []string) error {
 		return err
 	}
 
-	var vmlinuz string
+	if fs.NArg() < 1 {
+		fs.Usage()
+		return fmt.Errorf("missing arguments")
+	}
+
 	if cfg.Kernel == "" {
 		return fmt.Errorf("specify a kernel via -vm.kernel")
-	} else if _, err := os.Stat(cfg.Kernel); err == nil {
-		// Kernel is a file on disk.
-		vmlinuz = cfg.Kernel
-	} else {
+	}
+
+	var vmlinuz string
+	var rootOverlay string
+	if info, err := os.Stat(cfg.Kernel); errors.Is(err, os.ErrNotExist) {
 		// Assume that kernel is a reference to an image.
 		cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
 		if err != nil {
@@ -80,15 +85,24 @@ func run(args []string) error {
 		}
 		defer oi.Release()
 
-		vmlinuz = filepath.Join(oi.Directory, "boot/vmlinuz")
-		if _, err := os.Stat(vmlinuz); err != nil {
-			return fmt.Errorf("image is missing kernel: %w", err)
+		rootOverlay = oi.Directory
+		vmlinuz = filepath.Join(oi.Directory, imageKernelPath)
+	} else if err == nil {
+		if info.IsDir() {
+			// Kernel is path to an extracted image on disk.
+			rootOverlay = cfg.Kernel
+			vmlinuz = filepath.Join(rootOverlay, imageKernelPath)
+		} else {
+			// Kernel is a file on disk.
+			vmlinuz = cfg.Kernel
 		}
+	} else {
+		// Unexpected error from stat, maybe not allowed to access it?
+		return fmt.Errorf("kernel: %w", err)
 	}
 
-	if fs.NArg() < 1 {
-		fs.Usage()
-		return fmt.Errorf("missing arguments")
+	if _, err := os.Stat(vmlinuz); err != nil {
+		return fmt.Errorf("invalid kernel: %w", err)
 	}
 
 	exe, err := exec.LookPath(fs.Arg(0))
@@ -106,16 +120,17 @@ func run(args []string) error {
 	}
 
 	cmd := &command{
-		Kernel: vmlinuz,
-		Memory: cfg.Memory,
-		SMP:    cfg.SMP,
-		Path:   exe,
-		Args:   fs.Args(),
-		Uid:    uid,
-		Gid:    gid,
-		Stdin:  os.Stdin,
-		Stdout: os.Stdout,
-		Stderr: os.Stderr,
+		Kernel:      vmlinuz,
+		Memory:      cfg.Memory,
+		SMP:         cfg.SMP,
+		Path:        exe,
+		Args:        fs.Args(),
+		Uid:         uid,
+		Gid:         gid,
+		Stdin:       os.Stdin,
+		Stdout:      os.Stdout,
+		Stderr:      os.Stderr,
+		RootOverlay: rootOverlay,
 	}
 
 	if err := cmd.Start(ctx); err != nil {

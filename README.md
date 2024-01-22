@@ -12,7 +12,14 @@ It's possible to obtain the kernel from a container image (requires Docker).
 go test -exec vimto -vm.kernel example.org/reg/image:tag .
 ```
 
-`vimto` expects the kernel to be at `/boot/vmlinuz` inside the image.
+Finally, you can also use a path to a directory:
+
+```shell
+go test -exec vimto -vm.kernel ./path/to/dir .
+```
+
+`vimto` expects the kernel to be at `/boot/vmlinuz` for containers and directories.
+See also [Container format](#container-format).
 
 ## Installation
 
@@ -28,6 +35,30 @@ CGO_ENABLED=0 go install lmb.io/vimto
 
 All available options and their values are in [testdata/default.toml](./testdata/default.toml).
 
+## Container directory format
+
+The container or directory must contain a file `/boot/vmlinuz` which is used to boot the VM.
+
+Other files and directories in the container are merged with the host filesystem
+using an overlayfs mount inside the VM.
+
+### Error: directory /lib: shadows symlink on host
+
+This error is generated if the image contains a directory that would shadow
+important directories in the host:
+
+* /lib
+* /lib64
+* /bin
+* /sbin
+
+This happens when running on distributions that have completed a /usr merge. In
+this case these directories are symlinks on the host. Overlaying a directory from
+the image will make the symlink disappear.
+
+To work around the issue, place files in `/usr/lib`, ... and include your own
+`/lib -> /usr/lib` symlink in the image.
+
 ## Requirements
 
 * A recent version of `qemu` (8.1.3 is known to work)
@@ -41,6 +72,7 @@ Here is a non-exhaustive list of required Linux options:
 * `CONFIG_NET_9P_VIRTIO=y`
 * `CONFIG_NET_9P=y`
 * `CONFIG_NET_CORE=y`
+* `CONFIG_OVERLAY_FS=y`
 * `CONFIG_PCI=y`
 * `CONFIG_SYSFS=y`
 * `CONFIG_TMPFS=y`

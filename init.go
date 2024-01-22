@@ -24,7 +24,11 @@ type syscaller interface {
 type realSyscaller struct{}
 
 func (rs realSyscaller) mount(mp *mountPoint) error {
-	return unix.Mount(mp.source, mp.target, mp.fstype, mp.flags, mp.options)
+	err := unix.Mount(mp.source, mp.target, mp.fstype, mp.flags, mp.options)
+	if err != nil {
+		return fmt.Errorf("mount %s: %w", mp.target, err)
+	}
+	return nil
 }
 
 func (rs realSyscaller) sync() {
@@ -37,6 +41,27 @@ func (rs realSyscaller) reboot(cmd int) error {
 
 func (rs realSyscaller) dup2(old, new int) error {
 	return unix.Dup2(old, new)
+}
+
+func mount(source, target, fstype string, flags uintptr, data string) error {
+	err := unix.Mount(source, target, fstype, flags, data)
+	if err != nil {
+		return fmt.Errorf("mount %s on %s (%s): %w", source, target, fstype, err)
+	}
+	return nil
+}
+
+func mountOverlay(target string, lowerdirs ...string) error {
+	var options strings.Builder
+	options.WriteString("lowerdir=")
+	for i, dir := range lowerdirs {
+		if i > 0 {
+			options.WriteRune(':')
+		}
+		options.WriteString(strings.ReplaceAll(dir, `:`, `\:`))
+	}
+
+	return unix.Mount("overlay", target, "overlay", 0, options.String())
 }
 
 type mountPoint struct {
@@ -75,6 +100,7 @@ var fsMagic = map[string]int64{
 	"devtmpfs":   unix.TMPFS_MAGIC,
 	"proc":       unix.PROC_SUPER_MAGIC,
 	"securityfs": unix.SECURITYFS_MAGIC,
+	"overlay":    unix.OVERLAYFS_SUPER_MAGIC,
 	"sysfs":      unix.SYSFS_MAGIC,
 	"tmpfs":      unix.TMPFS_MAGIC,
 }
@@ -131,6 +157,17 @@ func (mt mountTable) pathIsBelowMount(path string) (string, bool) {
 
 func minimalInit(sys syscaller, args []string) error {
 	err := func() error {
+		if len(args) != 2 {
+			return fmt.Errorf("expected two arguments, got %q", args)
+		}
+
+		if err := prepareRoot(); err != nil {
+			return err
+		}
+
+		stdioPort := args[0]
+		controlPort := args[1]
+
 		ignored, err := earlyMounts.mountAll(sys)
 		if err != nil {
 			return fmt.Errorf("mount: %w", err)
@@ -139,13 +176,6 @@ func minimalInit(sys syscaller, args []string) error {
 		for _, mp := range ignored {
 			fmt.Fprintf(os.Stderr, "Mounting %s failed, ignoring\n", mp)
 		}
-
-		if len(args) != 2 {
-			return fmt.Errorf("expected two arguments, got %q", args)
-		}
-
-		stdioPort := args[0]
-		controlPort := args[1]
 
 		ports, err := readVirtioPorts()
 		if err != nil {
@@ -175,21 +205,7 @@ func minimalInit(sys syscaller, args []string) error {
 			return fmt.Errorf("read command: %w", err)
 		}
 
-		tags, err := read9PMountTags()
-		if err != nil {
-			return fmt.Errorf("read 9p mount tags: %w", err)
-		}
-
-		for _, tag := range tags {
-			if tag == p9RootTag {
-				continue
-			}
-
-			path, ok := cmd.MountTags[tag]
-			if !ok {
-				return fmt.Errorf("missing path for 9p mount tag %q", tag)
-			}
-
+		for tag, path := range cmd.MountTags {
 			fmt.Println("Mounting", path)
 
 			if fs, ok := earlyMounts.pathIsBelowMount(path); ok && fs == "tmpfs" {
@@ -261,6 +277,135 @@ func minimalInit(sys syscaller, args []string) error {
 
 	sys.sync()
 	return sys.reboot(unix.LINUX_REBOOT_CMD_POWER_OFF)
+}
+
+func prepareRoot() error {
+	const (
+		hostDir    = "/host"
+		overlayDir = "/overlay"
+		mergedDir  = "/merged"
+	)
+
+	// The current mount table looks something like this:
+	//    /    9pfs     mount of host
+	//    /dev devtmpfs (automounted)
+
+	// Remove unnecessary /dev, we're going to mount our own later on.
+	if err := unix.Unmount("/dev", 0); err != nil && !errors.Is(err, unix.ENOENT) {
+		return fmt.Errorf("unmount automounted /dev: %w", err)
+	}
+
+	// Mount a tmpfs so that we can create files, etc. Doesn't have to be on
+	// /tmp, but why not?
+	// TODO: flags?
+	if err := mount("tmpfs", "/tmp", "tmpfs", 0, ""); err != nil {
+		return err
+	}
+
+	// Create mountpoints in our own tmpfs.
+	for _, dir := range []string{hostDir, overlayDir, mergedDir} {
+		if err := os.Mkdir(filepath.Join("/tmp", dir), 0755); err != nil {
+			return err
+		}
+	}
+
+	// Switch the root to the tmpfs.
+	if err := unix.PivotRoot("/tmp", filepath.Join("/tmp", hostDir)); err != nil {
+		return fmt.Errorf("pivot root: %w", err)
+	}
+
+	// The mount table is now:
+	//    /         tmpfs
+	//    /host     9pfs
+
+	root := hostDir
+	err := mount(p9OverlayTag, overlayDir, "9p", unix.MS_RDONLY, "version=9p2000.L,trans=virtio,access=any")
+	if errors.Is(err, unix.ENOENT) {
+		fmt.Fprintln(os.Stderr, "Not mounting overlay:", err)
+	} else if err != nil {
+		return fmt.Errorf("mount overlay: %w", err)
+	} else {
+		if err := checkHostShadowing(hostDir, overlayDir); err != nil {
+			return err
+		}
+
+		if err := mountOverlay(mergedDir, overlayDir, hostDir); err != nil {
+			return fmt.Errorf("mount root overlay: %w", err)
+		}
+
+		// The mount table is now:
+		//    /        tmpfs
+		//    /host    9pfs
+		//    /overlay 9pfs
+		//    /merged  overlayfs
+
+		root = mergedDir
+	}
+
+	if err := os.Chdir(root); err != nil {
+		return err
+	}
+
+	err = unix.Mount(".", "/", "", unix.MS_MOVE, "")
+	if err != nil {
+		return fmt.Errorf("move root mount: %w", err)
+	}
+
+	// The mount table is now:
+	//    /        overlayfs or 9pfs
+	//    /host    9pfs              (shadowed by /)
+	//    /overlay 9pfs              (shadowed by /) (optional)
+
+	if err := unix.Chroot("."); err != nil {
+		return fmt.Errorf("chroot: %w", err)
+	}
+
+	if err := unix.Chdir("/"); err != nil {
+		return fmt.Errorf("chdir: %w", err)
+	}
+
+	return nil
+}
+
+var errShadowedDirectory = errors.New("shadows symlink on host")
+
+// checkHostShadowing ensures that some important directories in the host aren't
+// shadowed by the overlay.
+//
+// For example, a /lib directory in the overlay will shadow a /lib symlink on
+// the host mount since overlay fs only ever merges two directories, not a
+// directory and a symlink.
+func checkHostShadowing(host, overlay string) error {
+	dirs := []string{
+		"/lib", "/lib64",
+		"/bin", "/sbin",
+	}
+
+	for _, dir := range dirs {
+		ovlInfo, err := os.Lstat(filepath.Join(overlay, dir))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !ovlInfo.IsDir() {
+			continue
+		}
+
+		hostInfo, err := os.Lstat(filepath.Join(host, dir))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if hostInfo.Mode().Type() == os.ModeSymlink {
+			return fmt.Errorf("directory %s: %w", dir, errShadowedDirectory)
+		}
+	}
+
+	return nil
 }
 
 // Read the names of virtio ports from /sys.

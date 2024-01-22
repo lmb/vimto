@@ -20,7 +20,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const p9RootTag = "/dev/root"
+const p9OverlayTag = "overlay"
 
 // command is a binary to be executed under a different kernel.
 //
@@ -45,6 +45,8 @@ type command struct {
 	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
+	// A directory to overlay over the root filesystem.
+	RootOverlay string
 
 	SerialPorts       map[string]*os.File
 	SharedDirectories []string
@@ -80,6 +82,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		fmt.Fprintf(cmd.Stderr, "%s is not readable, execution might fail with %q\n", cmd.Path, unix.EACCES)
 	}
 
+	fds := &fdSets{}
 	cds := &chardevs{}
 	ports := &serialPorts{}
 	virtioPorts := &virtioSerialPorts{make(map[chardev]string)}
@@ -94,7 +97,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	defer consoleHost.Close()
 	defer consoleGuest.Close()
 
-	consolePort := ports.add(cds.addFile(consoleGuest))
+	consolePort := ports.add(cds.addFdSet(fds.addFile(consoleGuest)))
 
 	// The second serial port is used for communication between host and guest.
 	controlHost, controlGuest, err := unixSocketpair()
@@ -104,7 +107,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	defer controlHost.Close()
 	defer controlGuest.Close()
 
-	virtioPorts.Chardevs[cds.addFile(controlGuest)] = controlPortName
+	virtioPorts.Chardevs[cds.addFdSet(fds.addFile(controlGuest))] = controlPortName
 
 	// The third serial port is always stdio. The init process executes
 	// subprocesses with this port as stdin, stdout and stderr.
@@ -125,8 +128,11 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		exitOnPanic{},
 		disablePS2Probing{},
 		disableRaidAutodetect{},
-		&p9Root{Path: "/"},
+		&p9Root{
+			"/",
+		},
 		// enableGDBServer{},
+		fds,
 		cds,
 		ports,
 		virtioPorts,
@@ -151,7 +157,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	}
 
 	for name, port := range cmd.SerialPorts {
-		virtioPorts.Chardevs[cds.addFile(port)] = name
+		virtioPorts.Chardevs[cds.addFdSet(fds.addFile(port))] = name
 	}
 
 	dir := cmd.Dir
@@ -188,6 +194,21 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 			ID:   fsdev(id),
 			Tag:  id,
 			Path: path,
+		})
+	}
+
+	var rootOverlay string
+	if cmd.RootOverlay != "" {
+		rootOverlay, err = filepath.Abs(cmd.RootOverlay)
+		if err != nil {
+			return err
+		}
+
+		devices = append(devices, &p9SharedDirectory{
+			fsdev(p9OverlayTag),
+			p9OverlayTag,
+			rootOverlay,
+			true,
 		})
 	}
 
@@ -260,7 +281,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	proc.Stdout = cmd.Stdout
 	proc.Stderr = cmd.Stderr
 	proc.WaitDelay = time.Second
-	proc.ExtraFiles = cds.Files
+	proc.ExtraFiles = fds.Files
 
 	console, err := net.FileConn(consoleHost)
 	if err != nil {
@@ -354,56 +375,87 @@ func (i initWithArgs) Cmdline() []string {
 }
 
 func (i initWithArgs) KArgs() []string {
-	return append([]string{"init=" + i.path, "--"}, i.args...)
+	kargs := []string{"init=" + i.path, "--"}
+	for _, arg := range i.args {
+		if arg == "" {
+			kargs = append(kargs, `""`)
+		} else {
+			kargs = append(kargs, arg)
+		}
+	}
+	return kargs
 }
 
-type chardev string
+type fdSet string
 
-// chardevs adds files as a character device.
+// fdSets manages fdsets.
 //
 // Assumes that files is passed in exec.Cmd.ExtraFiles.
-type chardevs struct {
+type fdSets struct {
 	Files []*os.File
-	mux   map[*os.File]bool
 }
 
 // addFile a fd backed chardev.
 //
 // Returns the chardev id allocated for the file.
-func (cds *chardevs) addFile(f *os.File) chardev {
+func (cds *fdSets) addFile(f *os.File) fdSet {
+	const idFmt = "/dev/fdset/%d"
+
 	for i, file := range cds.Files {
 		if f == file {
-			if cds.mux == nil {
-				cds.mux = make(map[*os.File]bool)
-			}
-
-			cds.mux[f] = true
-			return chardev(fmt.Sprintf("cd-%d", i))
+			return fdSet(fmt.Sprintf(idFmt, i))
 		}
 	}
 
-	id := fmt.Sprintf("cd-%d", len(cds.Files))
+	id := fdSet(fmt.Sprintf(idFmt, len(cds.Files)))
 	cds.Files = append(cds.Files, f)
-	return chardev(id)
+	return id
 }
 
-func (cds *chardevs) Cmdline() []string {
+func (cds *fdSets) Cmdline() []string {
 	const execFirstExtraFd = 3
 
 	var args []string
-	for i, file := range cds.Files {
+	for i := range cds.Files {
 		fd := execFirstExtraFd + i
-		id := fmt.Sprintf("cd-%d", i)
+		args = append(args,
+			"-add-fd", fmt.Sprintf("fd=%d,set=%d", fd, i),
+		)
+	}
+	return args
+}
 
-		var extraOpts string
-		if cds.mux[file] {
-			extraOpts += ",mux=on"
+func (*fdSets) KArgs() []string { return nil }
+
+type chardev string
+
+// chardevs manages character devices.
+type chardevs struct {
+	Pipes []fdSet
+}
+
+func (cds *chardevs) addFdSet(fds fdSet) chardev {
+	id := chardev(fmt.Sprintf("cd-%d", len(cds.Pipes)))
+	cds.Pipes = append(cds.Pipes, fds)
+	return id
+}
+
+func (cds *chardevs) Cmdline() []string {
+	mux := make(map[fdSet]int)
+	for _, fds := range cds.Pipes {
+		mux[fds]++
+	}
+
+	var args []string
+	for i, fds := range cds.Pipes {
+		id := chardev(fmt.Sprintf("cd-%d", i))
+
+		arg := fmt.Sprintf("pipe,id=%s,path=%s", id, fds)
+		if mux[fds] > 1 {
+			arg += ",mux=on"
 		}
 
-		args = append(args,
-			"-add-fd", fmt.Sprintf("fd=%d,set=%d", fd, fd),
-			"-chardev", fmt.Sprintf("pipe,id=%s,path=/dev/fdset/%d%s", id, fd, extraOpts),
-		)
+		args = append(args, "-chardev", arg)
 	}
 	return args
 }
@@ -570,7 +622,6 @@ func (p9r *p9Root) Cmdline() []string {
 
 func (*p9Root) KArgs() []string {
 	return []string{
-		"devtmpfs.mount=1",
 		"root=/dev/root",
 		"rootfstype=9p",
 		"rootflags=trans=virtio,version=9p2000.L",
@@ -578,15 +629,16 @@ func (*p9Root) KArgs() []string {
 }
 
 type p9SharedDirectory struct {
-	ID   fsdev
-	Tag  string
-	Path string
-	// TODO: ReadOnly support.
+	ID       fsdev
+	Tag      string
+	Path     string
+	ReadOnly bool
 }
 
 func (p9sd *p9SharedDirectory) Cmdline() []string {
 	return []string{
-		"-fsdev", fmt.Sprintf("local,id=%s,path=%s,security_model=none,multidevs=remap", p9sd.ID, p9sd.Path),
+		// Need security_model=none due to https://gitlab.com/qemu-project/qemu/-/issues/173
+		"-fsdev", fmt.Sprintf("local,id=%s,path=%s,readonly=%t,security_model=none,multidevs=remap", p9sd.ID, p9sd.Path, p9sd.ReadOnly),
 		"-device", fmt.Sprintf("virtio-9p-pci,fsdev=%s,mount_tag=%s", p9sd.ID, p9sd.Tag),
 	}
 }
