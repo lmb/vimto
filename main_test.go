@@ -31,13 +31,9 @@ func TestExecutable(t *testing.T) {
 	e.Cmds["vimto"] = script.Program("vimto", nil, time.Second)
 	e.Cmds["config"] = script.Command(script.CmdUsage{
 		Summary: "Write to the configuration file",
-		Args:    "kernel",
+		Args:    "items...",
 	}, func(s *script.State, args ...string) (script.WaitFunc, error) {
-		if len(args) != 1 {
-			return nil, fmt.Errorf("expected one argument, got %d", len(args))
-		}
-
-		contents := fmt.Sprintf(`kernel="%s"`, args[0])
+		contents := strings.Join(args, "\n")
 		return nil, os.WriteFile(filepath.Join(s.Getwd(), configFileName), []byte(contents), 0644)
 	})
 

@@ -1,4 +1,4 @@
-config ${PKG}/testdata/vmlinuz
+config kernel="${PKG}/testdata/vmlinuz"
 
 # Exit status and stdout, stderr of tests is correctly forwarded.
 exec go test -exec vimto -run Success -v .
