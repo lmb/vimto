@@ -6,6 +6,7 @@ require (
 	github.com/BurntSushi/toml v1.3.2
 	github.com/docker/docker v24.0.7+incompatible
 	github.com/go-quicktest/qt v1.101.0
+	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51
 	github.com/u-root/u-root v0.11.0
 	golang.org/x/sync v0.6.0
 	golang.org/x/sys v0.13.0

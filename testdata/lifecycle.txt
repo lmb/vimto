@@ -1,0 +1,5 @@
+config kernel="${PKG}/testdata/vmlinuz" 'setup=["touch ''foo bar''"]' 'teardown=["rm ''foo bar''"]'
+
+# Setup and teardown programs are executed.
+vimto -- stat 'foo bar'
+! exists foo

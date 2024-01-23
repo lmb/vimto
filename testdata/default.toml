@@ -2,3 +2,5 @@ kernel = ""
 memory = "size=128M"
 smp = "cpus=1"
 sudo = false
+setup = ["ip link set dev lo up"]
+teardown = []

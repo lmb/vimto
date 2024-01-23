@@ -10,18 +10,41 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"github.com/kballard/go-shellquote"
 )
 
 type config struct {
-	Kernel string `toml:"kernel"`
-	Memory string `toml:"memory"`
-	SMP    string `toml:"smp"`
-	Sudo   bool   `toml:"sudo"`
+	Kernel   string          `toml:"kernel"`
+	Memory   string          `toml:"memory"`
+	SMP      string          `toml:"smp"`
+	Sudo     bool            `toml:"sudo"`
+	Setup    []configCommand `toml:"setup"`
+	Teardown []configCommand `toml:"teardown"`
+}
+
+type configCommand []string
+
+func (cc *configCommand) UnmarshalText(text []byte) error {
+	words, err := shellquote.Split(string(text))
+	if err != nil {
+		return err
+	}
+
+	*cc = configCommand(words)
+	return nil
+}
+
+func (cc *configCommand) MarshalText() ([]byte, error) {
+	return []byte(shellquote.Join(*cc...)), nil
 }
 
 var defaultConfig = &config{
 	Memory: "size=128M",
 	SMP:    "cpus=1",
+	Setup: []configCommand{
+		[]string{"ip", "link", "set", "dev", "lo", "up"},
+	},
+	Teardown: []configCommand{},
 }
 
 const configFileName = ".vimto.toml"

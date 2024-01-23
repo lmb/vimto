@@ -17,7 +17,6 @@ import (
 
 	"github.com/u-root/u-root/pkg/qemu"
 	"golang.org/x/sync/errgroup"
-	"golang.org/x/sys/unix"
 )
 
 const p9OverlayTag = "overlay"
@@ -48,6 +47,9 @@ type command struct {
 	// A directory to overlay over the root filesystem.
 	RootOverlay string
 
+	// Commands to execute before and after Path is executed.
+	Setup, Teardown []configCommand
+
 	SerialPorts       map[string]*os.File
 	SharedDirectories []string
 
@@ -73,13 +75,6 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 
 	if cmd.cmd != nil {
 		return errors.New("qemu: already started")
-	}
-
-	if err := unix.Access(cmd.Path, unix.R_OK); err != nil && cmd.Stderr != nil {
-		// QEMU limitation: the 9p implementation needs to be able to read the
-		// executable to be able to execute it in the VM.
-		// TODO: Might be able to avoid this using CAP_DAC_OVERRIDE or similar.
-		fmt.Fprintf(cmd.Stderr, "%s is not readable, execution might fail with %q\n", cmd.Path, unix.EACCES)
 	}
 
 	fds := &fdSets{}
@@ -218,6 +213,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		dir,
 		cmd.Uid, cmd.Gid,
 		cmd.Env,
+		cmd.Setup, cmd.Teardown,
 		mountTags,
 	}
 
@@ -353,12 +349,13 @@ func (cmd *command) Wait() error {
 }
 
 type execCommand struct {
-	Path      string
-	Args      []string
-	Dir       string
-	Uid, Gid  int
-	Env       []string
-	MountTags map[string]string // map[tag]path
+	Path            string
+	Args            []string
+	Dir             string
+	Uid, Gid        int
+	Env             []string
+	Setup, Teardown []configCommand
+	MountTags       map[string]string // map[tag]path
 }
 
 type execResult struct {

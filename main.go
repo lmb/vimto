@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -105,11 +104,6 @@ func run(args []string) error {
 		return fmt.Errorf("invalid kernel: %w", err)
 	}
 
-	exe, err := exec.LookPath(fs.Arg(0))
-	if err != nil {
-		return err
-	}
-
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
@@ -123,7 +117,7 @@ func run(args []string) error {
 		Kernel:      vmlinuz,
 		Memory:      cfg.Memory,
 		SMP:         cfg.SMP,
-		Path:        exe,
+		Path:        fs.Arg(0),
 		Args:        fs.Args(),
 		Uid:         uid,
 		Gid:         gid,
@@ -131,6 +125,8 @@ func run(args []string) error {
 		Stdout:      os.Stdout,
 		Stderr:      os.Stderr,
 		RootOverlay: rootOverlay,
+		Setup:       cfg.Setup,
+		Teardown:    cfg.Teardown,
 	}
 
 	if err := cmd.Start(ctx); err != nil {

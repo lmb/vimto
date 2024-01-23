@@ -227,33 +227,40 @@ func minimalInit(sys syscaller, args []string) error {
 			}
 		}
 
-		if err := replaceFdWithFile(sys, 2, stdio); err != nil {
-			return fmt.Errorf("replace stderr: %w", err)
+		for _, env := range cmd.Env {
+			if strings.HasPrefix(env, "PATH=") {
+				err := os.Setenv("PATH", strings.TrimPrefix(env, "PATH="))
+				if err != nil {
+					return err
+				}
+				// NB: Must check all entries since there might be duplicates.
+			}
 		}
 
-		if err := replaceFdWithFile(sys, 1, stdio); err != nil {
-			return fmt.Errorf("replace stdout: %w", err)
+		if err := executeSimpleCommands(cmd.Setup, cmd.Dir, cmd.Env); err != nil {
+			return fmt.Errorf("setup: %w", err)
 		}
 
-		if err := replaceFdWithFile(sys, 0, stdio); err != nil {
-			return fmt.Errorf("replace stdin: %w", err)
-		}
-
-		proc := exec.Cmd{
-			Path:   cmd.Path,
-			Args:   cmd.Args,
-			Dir:    cmd.Dir,
-			Env:    cmd.Env,
-			Stdin:  os.Stdin,
-			Stdout: os.Stdout,
-			Stderr: os.Stderr,
-			SysProcAttr: &syscall.SysProcAttr{
-				Credential: &syscall.Credential{
-					Uid:         uint32(cmd.Uid),
-					Gid:         uint32(cmd.Gid),
-					NoSetGroups: true,
-				},
+		proc := exec.Command(cmd.Path)
+		proc.Args = cmd.Args
+		proc.Dir = cmd.Dir
+		proc.Env = cmd.Env
+		proc.Stdin = stdio
+		proc.Stdout = stdio
+		proc.Stderr = stdio
+		proc.SysProcAttr = &syscall.SysProcAttr{
+			Credential: &syscall.Credential{
+				Uid:         uint32(cmd.Uid),
+				Gid:         uint32(cmd.Gid),
+				NoSetGroups: true,
 			},
+		}
+
+		if err := unix.Access(proc.Path, unix.R_OK); err != nil {
+			// QEMU limitation: the 9p implementation needs to be able to read the
+			// executable to be able to execute it in the VM.
+			// TODO: Might be able to avoid this using CAP_DAC_OVERRIDE or similar.
+			fmt.Fprintf(stdio, "%s is not readable, execution might fail with %q\n", cmd.Path, unix.EACCES)
 		}
 
 		var result execResult
@@ -262,6 +269,10 @@ func minimalInit(sys syscaller, args []string) error {
 			if result.Error == "" {
 				result.Error = fmt.Sprintf("nil error of type %T", err)
 			}
+		}
+
+		if err := executeSimpleCommands(cmd.Teardown, cmd.Dir, cmd.Env); err != nil {
+			return fmt.Errorf("teardown: %w", err)
 		}
 
 		if err := control.SetDeadline(time.Now().Add(time.Second)); err != nil {
@@ -277,6 +288,25 @@ func minimalInit(sys syscaller, args []string) error {
 
 	sys.sync()
 	return sys.reboot(unix.LINUX_REBOOT_CMD_POWER_OFF)
+}
+
+func executeSimpleCommands(cmds []configCommand, dir string, env []string) error {
+	for _, args := range cmds {
+		if len(args) < 1 {
+			return fmt.Errorf("invalid empty command")
+		}
+
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		cmd.Env = env
+		cmd.Stderr = os.Stderr
+		cmd.Stdout = os.Stdout
+		cmd.WaitDelay = time.Second
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func prepareRoot() error {
