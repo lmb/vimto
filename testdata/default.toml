@@ -1,6 +1,6 @@
 kernel = ""
 memory = "size=128M"
 smp = "cpus=1"
-sudo = false
+user = ""
 setup = ["ip link set dev lo up"]
 teardown = []

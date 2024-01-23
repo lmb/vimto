@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,7 +18,7 @@ type config struct {
 	Kernel   string          `toml:"kernel"`
 	Memory   string          `toml:"memory"`
 	SMP      string          `toml:"smp"`
-	Sudo     bool            `toml:"sudo"`
+	User     string          `toml:"user"`
 	Setup    []configCommand `toml:"setup"`
 	Teardown []configCommand `toml:"teardown"`
 }
@@ -76,6 +77,24 @@ func parseConfigFromTOML(dir string, cfg *config) error {
 	}
 
 	return fmt.Errorf("%q: %w: %s", f.Name(), errUnrecognisedKeys, strings.Join(keys, ", "))
+}
+
+func defaultConfigAndFlags() (*config, *flag.FlagSet) {
+	cfg := *defaultConfig
+	fs := flag.NewFlagSet("vimto", flag.ContinueOnError)
+	fs.StringVar(&cfg.Kernel, "vm.kernel", defaultConfig.Kernel, "`path or url` to the Linux image")
+	fs.StringVar(&cfg.Memory, "vm.memory", defaultConfig.Memory, "memory to give to the VM")
+	fs.StringVar(&cfg.SMP, "vm.smp", defaultConfig.SMP, "")
+	fs.BoolFunc("vm.sudo", "execute as root", func(s string) error {
+		if s != "true" {
+			return errors.New("flag only accepts true")
+		}
+
+		cfg.User = "root"
+		return nil
+	})
+
+	return &cfg, fs
 }
 
 func findConfigFile(dir string) (*os.File, error) {

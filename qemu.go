@@ -10,9 +10,11 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/u-root/u-root/pkg/qemu"
@@ -37,8 +39,8 @@ type command struct {
 	// The directory to execute the binary in. Defaults to the current working
 	// directory.
 	Dir string
-	// User id and group id to execute the command under.
-	Uid, Gid int
+	// User to execute the command under. Defaults to the current user.
+	User string
 	// Env works like exec.Cmd.Env.
 	Env    []string
 	Stdin  io.Reader
@@ -207,11 +209,30 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		})
 	}
 
+	uid := os.Geteuid()
+	gid := os.Getegid()
+	if cmd.User != "" {
+		usr, err := user.Lookup(cmd.User)
+		if err != nil {
+			return err
+		}
+
+		uid, err = strconv.Atoi(usr.Uid)
+		if err != nil {
+			return fmt.Errorf("parse uid: %w", err)
+		}
+
+		gid, err = strconv.Atoi(usr.Gid)
+		if err != nil {
+			return fmt.Errorf("parse gid: %w", err)
+		}
+	}
+
 	execCmd := execCommand{
 		cmd.Path,
 		cmd.Args,
 		dir,
-		cmd.Uid, cmd.Gid,
+		uid, gid,
 		cmd.Env,
 		cmd.Setup, cmd.Teardown,
 		mountTags,

@@ -31,19 +31,15 @@ func main() {
 }
 
 func run(args []string) error {
-	var cfg config
-	fs := flag.NewFlagSet("vimto", flag.ContinueOnError)
-	fs.StringVar(&cfg.Kernel, "vm.kernel", defaultConfig.Kernel, "`path or url` to the Linux image")
-	fs.StringVar(&cfg.Memory, "vm.memory", defaultConfig.Memory, "memory to give to the VM")
-	fs.StringVar(&cfg.SMP, "vm.smp", defaultConfig.SMP, "")
-	fs.BoolVar(&cfg.Sudo, "vm.sudo", defaultConfig.Sudo, "execute as root")
+	cfg, fs := defaultConfigAndFlags()
+
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Usage: %s [flags] [--] </path/to/binary> [flags of binary]\n", fs.Name())
 		fmt.Fprintln(fs.Output())
 		fs.PrintDefaults()
 	}
 
-	if err := parseConfigFromTOML(".", &cfg); err != nil {
+	if err := parseConfigFromTOML(".", cfg); err != nil {
 		return fmt.Errorf("read config: %w", err)
 	}
 
@@ -107,20 +103,13 @@ func run(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	uid := os.Geteuid()
-	gid := os.Getegid()
-	if cfg.Sudo {
-		uid, gid = 0, 0
-	}
-
 	cmd := &command{
 		Kernel:      vmlinuz,
 		Memory:      cfg.Memory,
 		SMP:         cfg.SMP,
 		Path:        fs.Arg(0),
 		Args:        fs.Args(),
-		Uid:         uid,
-		Gid:         gid,
+		User:        cfg.User,
 		Stdin:       os.Stdin,
 		Stdout:      os.Stdout,
 		Stderr:      os.Stderr,

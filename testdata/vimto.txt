@@ -27,6 +27,9 @@ stdout ^${UID}$
 vimto -vm.sudo -- id -u
 stdout ^0$
 
+# vm.sudo doesn't accept arguments.
+! vimto -vm.sudo=false -- true
+
 # Current working directory is preserved.
 vimto -- pwd
 stdout ^${WORKDIR}
