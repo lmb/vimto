@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
 	docker "github.com/docker/docker/client"
 	"golang.org/x/sys/unix"
 )
@@ -26,22 +26,22 @@ type imageCache struct {
 	baseDir string
 }
 
-func (ic *imageCache) Acquire(ctx context.Context, refStr string) (_ *image, err error) {
+func (ic *imageCache) Acquire(ctx context.Context, img string) (_ *image, err error) {
 	closeOnError := func(c io.Closer) {
 		if err != nil {
 			c.Close()
 		}
 	}
 
-	id, err := imageID(ctx, ic.cli, refStr)
+	refStr, digest, err := imageID(ctx, ic.cli, img)
 	if err != nil {
-		id, err = fetchImage(ctx, ic.cli, refStr)
+		refStr, digest, err = fetchImage(ctx, ic.cli, img)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("obtain image id: %w", err)
 	}
 
-	cacheDir, err := ic.openCacheDir(id)
+	cacheDir, err := ic.openCacheDir(digest)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +71,7 @@ func (ic *imageCache) Acquire(ctx context.Context, refStr string) (_ *image, err
 	}
 	defer os.RemoveAll(tmpdir)
 
-	if err := extractImage(ctx, ic.cli, id, tmpdir); err != nil {
+	if err := extractImage(ctx, ic.cli, refStr, tmpdir); err != nil {
 		return nil, fmt.Errorf("extract image: %w", err)
 	}
 
@@ -107,10 +107,10 @@ func (img *image) Release() error {
 	return img.dir.Close()
 }
 
-func fetchImage(ctx context.Context, cli *docker.Client, refStr string) (string, error) {
+func fetchImage(ctx context.Context, cli *docker.Client, refStr string) (string, string, error) {
 	remotePullReader, err := cli.ImagePull(ctx, refStr, types.ImagePullOptions{})
 	if err != nil {
-		return "", fmt.Errorf("cannot pull image %s: %w", refStr, err)
+		return "", "", fmt.Errorf("cannot pull image %s: %w", refStr, err)
 	}
 	defer remotePullReader.Close()
 
@@ -119,44 +119,26 @@ func fetchImage(ctx context.Context, cli *docker.Client, refStr string) (string,
 	return imageID(ctx, cli, refStr)
 }
 
-func imageID(ctx context.Context, cli *docker.Client, refStr string) (string, error) {
+func imageID(ctx context.Context, cli *docker.Client, refStr string) (string, string, error) {
 	image, _, err := cli.ImageInspectWithRaw(ctx, refStr)
 	if err != nil {
-		return "", fmt.Errorf("inspect image: %w", err)
+		return "", "", fmt.Errorf("inspect image: %w", err)
 	}
 
-	return image.ID, nil
+	if len(image.RepoDigests) < 1 {
+		return "", "", fmt.Errorf("no digest for %q", refStr)
+	}
+
+	return image.RepoDigests[0], image.ID, nil
 }
 
-func extractImage(ctx context.Context, cli *docker.Client, refStr, dst string) error {
-	resp, err := cli.ContainerCreate(ctx, &container.Config{
-		Image:           refStr,
-		Tty:             false,
-		NetworkDisabled: true,
-		Cmd:             []string{"/bin/false"},
-	}, nil, nil, nil, "")
+func extractImage(ctx context.Context, cli *docker.Client, image, dst string) error {
+	cmd := exec.CommandContext(ctx, "docker", "buildx", "build", "--quiet", "--output", dst, "-")
+	cmd.Stdin = strings.NewReader(fmt.Sprintf("FROM %s\n", image))
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("cannot create container from %s: %w", refStr, err)
+		return fmt.Errorf("%w: %s", err, string(out))
 	}
-	defer func() {
-		err := cli.ContainerRemove(ctx, resp.ID, types.ContainerRemoveOptions{
-			Force: true,
-		})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "could not clean up container %s: %s\n", resp.ID, err)
-		}
-	}()
-
-	imageReader, _, err := cli.CopyFromContainer(ctx, resp.ID, "/")
-	if err != nil {
-		return fmt.Errorf("copy from container: %w", err)
-	}
-	defer imageReader.Close()
-
-	if err := extractTar(imageReader, dst); err != nil {
-		return err
-	}
-
 	return nil
 }
 

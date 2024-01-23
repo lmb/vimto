@@ -37,12 +37,12 @@ func TestFetchAndExtractImage(t *testing.T) {
 	tmp := t.TempDir()
 	cli := mustNewDockerClient(t)
 
-	id, err := fetchImage(context.Background(), cli, "busybox")
+	refStr, digest, err := fetchImage(context.Background(), cli, "busybox")
 	qt.Assert(t, qt.IsNil(err))
 
-	t.Log("id is", id)
+	t.Log("digest is", digest)
 
-	err = extractImage(context.Background(), cli, id, tmp)
+	err = extractImage(context.Background(), cli, refStr, tmp)
 	qt.Assert(t, qt.IsNil(err))
 
 	_, err = os.Stat(filepath.Join(tmp, "bin", "sh"))
@@ -69,7 +69,7 @@ func TestSecureJoin(t *testing.T) {
 
 func BenchmarkExtractImage(b *testing.B) {
 	cli := mustNewDockerClient(b)
-	id, err := fetchImage(context.Background(), cli, "busybox")
+	refStr, _, err := fetchImage(context.Background(), cli, "busybox")
 	qt.Assert(b, qt.IsNil(err))
 
 	b.ResetTimer()
@@ -78,7 +78,7 @@ func BenchmarkExtractImage(b *testing.B) {
 		tmp := b.TempDir()
 		b.StartTimer()
 
-		extractImage(context.Background(), cli, id, tmp)
+		extractImage(context.Background(), cli, refStr, tmp)
 
 		b.StopTimer()
 		os.RemoveAll(tmp)
