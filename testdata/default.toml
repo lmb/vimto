@@ -2,5 +2,5 @@ kernel = ""
 memory = "size=128M"
 smp = "cpus=1"
 user = ""
-setup = ["ip link set dev lo up"]
+setup = []
 teardown = []

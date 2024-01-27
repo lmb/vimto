@@ -237,6 +237,10 @@ func minimalInit(sys syscaller, args []string) error {
 			}
 		}
 
+		if err := executeSimpleCommands([]configCommand{{"ip", "link", "set", "dev", "lo", "up"}}, cmd.Dir, cmd.Env); err != nil {
+			fmt.Fprintln(os.Stderr, "Set up lo:", err)
+		}
+
 		if err := executeSimpleCommands(cmd.Setup, cmd.Dir, cmd.Env); err != nil {
 			return fmt.Errorf("setup: %w", err)
 		}

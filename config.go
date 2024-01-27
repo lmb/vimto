@@ -40,11 +40,9 @@ func (cc *configCommand) MarshalText() ([]byte, error) {
 }
 
 var defaultConfig = &config{
-	Memory: "size=128M",
-	SMP:    "cpus=1",
-	Setup: []configCommand{
-		[]string{"ip", "link", "set", "dev", "lo", "up"},
-	},
+	Memory:   "size=128M",
+	SMP:      "cpus=1",
+	Setup:    []configCommand{},
 	Teardown: []configCommand{},
 }
 
