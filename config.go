@@ -18,6 +18,7 @@ type config struct {
 	Memory   string          `toml:"memory"`
 	SMP      string          `toml:"smp"`
 	User     string          `toml:"user"`
+	Env      []string        `toml:"env"`
 	Setup    []configCommand `toml:"setup"`
 	Teardown []configCommand `toml:"teardown"`
 }
@@ -43,6 +44,7 @@ var defaultConfig = &config{
 	SMP:      "cpus=1",
 	Setup:    []configCommand{},
 	Teardown: []configCommand{},
+	Env:      []string{},
 }
 
 const configFileName = ".vimto.toml"

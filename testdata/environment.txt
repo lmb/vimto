@@ -1,0 +1,15 @@
+config kernel="${PKG}/testdata/vmlinuz"
+
+# By default, all environment vars are preserved
+env FOO=bar BAZ=1
+vimto exec -- env
+stdout FOO=bar
+stdout BAZ=1
+
+# Filtering environment variables works.
+config kernel="${PKG}/testdata/vmlinuz" env=["FOO","MISSING"]
+
+vimto exec -- env
+stdout FOO=bar
+! stdout BAZ
+! stdout MISSING

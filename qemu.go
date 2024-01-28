@@ -239,7 +239,6 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	}
 
 	if execCmd.Env == nil {
-		// TODO: Might have to do some filtering here.
 		execCmd.Env = os.Environ()
 	}
 

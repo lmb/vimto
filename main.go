@@ -159,6 +159,22 @@ func execCmd(args []string) error {
 		return fmt.Errorf("invalid kernel: %w", err)
 	}
 
+	var env []string
+	if len(cfg.Env) > 0 {
+		for _, key := range cfg.Env {
+			value, ok := os.LookupEnv(key)
+			if !ok {
+				continue
+			}
+
+			env = append(env, fmt.Sprintf("%s=%s", key, value))
+		}
+
+		// Always preserve PATH, so that modifications to it via .profile or similar
+		// are carried into the VM.
+		env = append(env, fmt.Sprintf("PATH=%s", os.Getenv("PATH")))
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
@@ -172,6 +188,7 @@ func execCmd(args []string) error {
 		Stdin:       os.Stdin,
 		Stdout:      os.Stdout,
 		Stderr:      os.Stderr,
+		Env:         env,
 		RootOverlay: rootOverlay,
 		Setup:       cfg.Setup,
 		Teardown:    cfg.Teardown,
