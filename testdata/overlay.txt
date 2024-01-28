@@ -3,7 +3,7 @@ cp ${PKG}/testdata/vmlinuz ./kernel/boot/
 config kernel="./kernel"
 
 # Booting via a kernel image or directory adds additonal files as an overlay.
-vimto /bin/cat /vimto-test
+vimto exec /bin/cat /vimto-test
 stdout ^IRnRnZPbNY$
 
 -- kernel/vimto-test --

@@ -24,33 +24,92 @@ func main() {
 		err = run(args)
 	}
 
-	if err != nil {
+	if err != nil && !errors.Is(err, flag.ErrHelp) {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
 }
 
 func run(args []string) error {
-	cfg, fs := defaultConfigAndFlags()
+	if len(args) > 0 && filepath.IsAbs(args[0]) && unix.Access(args[0], unix.X_OK) == nil {
+		// This is an invocation via go test -exec. Patch up the command line.
+		execFs := execFlags(nil)
+		args = append([]string{"exec"}, sortArgs(execFs, args)...)
+		fmt.Println("sorting")
+	}
 
+	fs := flag.NewFlagSet("vimto", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "Usage: %s [command] ...\n", fs.Name())
+		fmt.Fprintln(fs.Output())
+		fmt.Fprintln(fs.Output(), "Available commands:")
+		fmt.Fprintln(fs.Output(), "\texec    Execute a command inside a VM")
+		fmt.Fprintln(fs.Output())
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if fs.NArg() < 1 {
+		return fmt.Errorf("expected at least one argument")
+	}
+
+	var err error
+	switch fs.Arg(0) {
+	case "exec":
+		err = execCmd(fs.Args()[1:])
+	default:
+		fs.Usage()
+		return fmt.Errorf("unknown command %q", fs.Arg(0))
+	}
+
+	if err != nil {
+		return fmt.Errorf("%s: %w", fs.Arg(0), err)
+	}
+
+	return nil
+}
+
+func execFlags(cfg *config) *flag.FlagSet {
+	fs := flag.NewFlagSet("exec", flag.ContinueOnError)
+	fs.Func("vm.kernel", "`path or url` to the Linux image", func(s string) error {
+		cfg.Kernel = s
+		return nil
+	})
+	fs.Func("vm.memory", "memory to give to the VM", func(s string) error {
+		cfg.Memory = s
+		return nil
+	})
+	fs.Func("vm.smp", "", func(s string) error {
+		cfg.SMP = s
+		return nil
+	})
+	fs.BoolFunc("vm.sudo", "execute as root", func(s string) error {
+		if s != "true" {
+			return errors.New("flag only accepts true")
+		}
+
+		cfg.User = "root"
+		return nil
+	})
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Usage: %s [flags] [--] </path/to/binary> [flags of binary]\n", fs.Name())
 		fmt.Fprintln(fs.Output())
 		fs.PrintDefaults()
+		fmt.Fprintln(fs.Output())
 	}
 
-	if err := parseConfigFromTOML(".", cfg); err != nil {
+	return fs
+}
+
+func execCmd(args []string) error {
+	cfg := *defaultConfig
+	fs := execFlags(&cfg)
+	if err := parseConfigFromTOML(".", &cfg); err != nil {
 		return fmt.Errorf("read config: %w", err)
 	}
 
-	if len(args) > 0 && filepath.IsAbs(args[0]) && unix.Access(args[0], unix.X_OK) == nil {
-		// This is an invocation via go test -exec.
-		args = sortArgs(fs, args)
-	}
-
-	if err := fs.Parse(args); errors.Is(err, flag.ErrHelp) {
-		return nil
-	} else if err != nil {
+	if err := fs.Parse(args); err != nil {
 		return err
 	}
 

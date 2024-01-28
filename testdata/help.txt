@@ -1,2 +1,5 @@
 vimto -help
 stderr Usage
+
+vimto exec -help
+stderr Usage
