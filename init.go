@@ -97,12 +97,14 @@ var earlyMounts = mountTable{
 var fsMagic = map[string]int64{
 	"bpf":        unix.BPF_FS_MAGIC,
 	"cgroup2":    unix.CGROUP2_SUPER_MAGIC,
+	"debugfs":    unix.DEBUGFS_MAGIC,
 	"devtmpfs":   unix.TMPFS_MAGIC,
+	"overlay":    unix.OVERLAYFS_SUPER_MAGIC,
 	"proc":       unix.PROC_SUPER_MAGIC,
 	"securityfs": unix.SECURITYFS_MAGIC,
-	"overlay":    unix.OVERLAYFS_SUPER_MAGIC,
 	"sysfs":      unix.SYSFS_MAGIC,
 	"tmpfs":      unix.TMPFS_MAGIC,
+	"tracefs":    unix.TRACEFS_MAGIC,
 }
 
 // Mount all mount points contained in the table.

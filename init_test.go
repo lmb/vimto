@@ -11,7 +11,7 @@ import (
 func TestFsMagic(t *testing.T) {
 	for _, mp := range earlyMounts {
 		_, ok := fsMagic[mp.fstype]
-		qt.Assert(t, qt.IsTrue(ok), qt.Commentf("Unknown magic for fstype %q", mp.fstype))
+		qt.Check(t, qt.IsTrue(ok), qt.Commentf("Unknown magic for fstype %q", mp.fstype))
 	}
 }
 
