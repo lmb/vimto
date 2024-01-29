@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -195,15 +194,12 @@ func minimalInit(sys syscaller, args []string) error {
 		if err != nil {
 			return err
 		}
-		defer control.Close()
+		comm := newRPC(control)
+		defer comm.Close()
 		delete(ports, controlPort)
 
-		if err := control.SetDeadline(time.Now().Add(time.Second)); err != nil {
-			return fmt.Errorf("control port: %w", err)
-		}
-
 		var cmd execCommand
-		if err := json.NewDecoder(control).Decode(&cmd); err != nil {
+		if err := comm.Read(&cmd, time.Now().Add(time.Second)); err != nil {
 			return fmt.Errorf("read command: %w", err)
 		}
 
@@ -269,23 +265,20 @@ func minimalInit(sys syscaller, args []string) error {
 			fmt.Fprintf(stdio, "%s is not readable, execution might fail with %q\n", cmd.Path, unix.EACCES)
 		}
 
-		var result execResult
-		if err = proc.Run(); err != nil {
-			result.Error = err.Error()
-			if result.Error == "" {
-				result.Error = fmt.Sprintf("nil error of type %T", err)
-			}
-		}
+		result := proc.Run()
 
 		if err := executeSimpleCommands(cmd.Teardown, cmd.Dir, cmd.Env); err != nil {
 			return fmt.Errorf("teardown: %w", err)
 		}
 
-		if err := control.SetDeadline(time.Now().Add(time.Second)); err != nil {
-			return fmt.Errorf("control port: %w", err)
+		var exitError *exec.ExitError
+		if errors.As(result, &exitError) && exitError.Exited() {
+			result = &guestExitError{exitError.ExitCode()}
+		} else if result != nil {
+			result = &genericGuestError{result.Error()}
 		}
 
-		return json.NewEncoder(control).Encode(&result)
+		return comm.Write(&result, time.Now().Add(time.Second))
 	}()
 
 	if err != nil {

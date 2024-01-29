@@ -24,10 +24,17 @@ func main() {
 		err = run(args)
 	}
 
-	if err != nil && !errors.Is(err, flag.ErrHelp) {
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		os.Exit(1)
+	if err == nil || errors.Is(err, flag.ErrHelp) {
+		return
 	}
+
+	var exitError *guestExitError
+	if errors.As(err, &exitError) {
+		os.Exit(exitError.ExitCode)
+	}
+
+	fmt.Fprintln(os.Stderr, "Error:", err)
+	os.Exit(128)
 }
 
 func run(args []string) error {

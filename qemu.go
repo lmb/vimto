@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -61,7 +60,7 @@ type command struct {
 	// Console contains boot diagnostics may only be read once tasks.Wait() has returned.
 	console bytes.Buffer
 	// Results may contain the result of an execution after tasks.Wait() has returned.
-	results chan *execResult
+	results chan error
 	// Write end of a pipe used to provide a blocking stdin to qemu.
 	fakeStdin *os.File
 }
@@ -92,7 +91,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
-	defer consoleHost.Close()
+	defer closeOnError(consoleHost)
 	defer consoleGuest.Close()
 
 	consolePort := ports.add(cds.addFdSet(fds.addFile(consoleGuest)))
@@ -301,12 +300,6 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	proc.WaitDelay = time.Second
 	proc.ExtraFiles = fds.Files
 
-	console, err := net.FileConn(consoleHost)
-	if err != nil {
-		return err
-	}
-	defer closeOnError(console)
-
 	control, err := net.FileConn(controlHost)
 	if err != nil {
 		return err
@@ -318,28 +311,27 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	}
 
 	cmd.tasks.Go(func() error {
-		defer console.Close()
+		defer consoleHost.Close()
 
-		_, err = io.Copy(&cmd.console, console)
+		_, err = io.Copy(&cmd.console, consoleHost)
 		return err
 	})
 
-	results := make(chan *execResult, 1)
+	results := make(chan error, 1)
 	cmd.tasks.Go(func() error {
-		defer control.Close()
+		comm := newRPC(control)
+		defer comm.Close()
 
-		enc := json.NewEncoder(control)
-		if err := enc.Encode(&execCmd); err != nil {
-			return err
+		if err := comm.Write(&execCmd, time.Now().Add(time.Second)); err != nil {
+			return fmt.Errorf("write command: %w", err)
 		}
 
-		var result execResult
-		dec := json.NewDecoder(control)
-		if err := dec.Decode(&result); err != nil {
+		var result error
+		if err := comm.Read(&result, time.Time{}); err != nil {
 			return fmt.Errorf("decode execution result: %w", err)
 		}
 
-		results <- &result
+		results <- result
 		return nil
 	})
 
@@ -362,12 +354,7 @@ func (cmd *command) Wait() error {
 		return err
 	}
 
-	result := <-cmd.results
-	if result.Error != "" {
-		return fmt.Errorf("guest: %s", result.Error)
-	}
-
-	return nil
+	return <-cmd.results
 }
 
 // Control codes emitted by the SeaBIOS boot sequence.
@@ -395,8 +382,20 @@ type execCommand struct {
 	MountTags       map[string]string // map[tag]path
 }
 
-type execResult struct {
-	Error string
+type guestExitError struct {
+	ExitCode int
+}
+
+func (gee *guestExitError) Error() string {
+	return fmt.Sprintf("guest: exit %d", gee.ExitCode)
+}
+
+type genericGuestError struct {
+	Message string
+}
+
+func (gge *genericGuestError) Error() string {
+	return fmt.Sprintf("guest: %s", gge.Message)
 }
 
 type initWithArgs struct {
