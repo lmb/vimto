@@ -35,9 +35,9 @@ CGO_ENABLED=0 go install lmb.io/vimto@latest
 
 All available options and their values are in [testdata/default.toml](./testdata/default.toml).
 
-## Container directory format
+## Container format
 
-The container or directory must contain a file `/boot/vmlinuz` which is used to boot the VM.
+The container (or directory) must contain a file `/boot/vmlinuz` which is used to boot the VM.
 
 Other files and directories in the container are merged with the host filesystem
 using an overlayfs mount inside the VM.
@@ -58,6 +58,11 @@ the image will make the symlink disappear.
 
 To work around the issue, place files in `/usr/lib`, ... and include your own
 `/lib -> /usr/lib` symlink in the image.
+
+## Currently not supported
+
+* Networking
+* Interactive shell sessions
 
 ## Requirements
 
