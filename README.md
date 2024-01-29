@@ -26,7 +26,7 @@ See also [Container format](#container-format).
 Install using the Go toolchain:
 
 ```shell
-CGO_ENABLED=0 go install lmb.io/vimto
+CGO_ENABLED=0 go install lmb.io/vimto@latest
 ```
 
 ## Configuration
