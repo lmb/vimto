@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -356,7 +357,7 @@ func (cmd *command) Wait() error {
 
 	if err := cmd.tasks.Wait(); err != nil {
 		if cmd.Stderr != nil {
-			_, _ = io.Copy(cmd.Stderr, &cmd.console)
+			_, _ = io.Copy(cmd.Stderr, controlCodeStripper{&cmd.console})
 		}
 		return err
 	}
@@ -367,6 +368,21 @@ func (cmd *command) Wait() error {
 	}
 
 	return nil
+}
+
+// Control codes emitted by the SeaBIOS boot sequence.
+//
+// See https://www.man7.org/linux/man-pages/man4/console_codes.4.html
+var seBIOSEscapeCodes = regexp.MustCompile("\x1b(c|\\[\\?7l|\\[2J|\\[0m)")
+
+type controlCodeStripper struct {
+	io.Reader
+}
+
+func (s controlCodeStripper) Read(buf []byte) (int, error) {
+	n, err := s.Reader.Read(buf)
+	n = copy(buf, seBIOSEscapeCodes.ReplaceAll(buf[:n], nil))
+	return n, err
 }
 
 type execCommand struct {
