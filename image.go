@@ -33,12 +33,9 @@ func (ic *imageCache) Acquire(ctx context.Context, img string) (_ *image, err er
 		}
 	}
 
-	refStr, digest, err := imageID(ctx, ic.cli, img)
+	refStr, digest, err := fetchImage(ctx, ic.cli, img)
 	if err != nil {
-		refStr, digest, err = fetchImage(ctx, ic.cli, img)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("obtain image id: %w", err)
+		return nil, fmt.Errorf("fetch image: %w", err)
 	}
 
 	cacheDir, err := ic.openCacheDir(digest)
@@ -61,9 +58,6 @@ func (ic *imageCache) Acquire(ctx context.Context, img string) (_ *image, err er
 	if err := flock(cacheDir, unix.LOCK_EX); err != nil {
 		return nil, fmt.Errorf("lock %q: %w", cacheDir.Name(), err)
 	}
-
-	// TODO: We don't notice if the tag changes since we don't pull
-	// again if we can resolve refStr to id locally.
 
 	tmpdir, err := os.MkdirTemp(ic.baseDir, "")
 	if err != nil {
@@ -108,6 +102,13 @@ func (img *image) Release() error {
 }
 
 func fetchImage(ctx context.Context, cli *docker.Client, refStr string) (string, string, error) {
+	if refStr, digest, err := imageID(ctx, cli, refStr); err == nil {
+		// Found a cached image, use that.
+		// TODO: We don't notice if the tag changes since we don't pull
+		// again if we can resolve refStr to id locally.
+		return refStr, digest, nil
+	}
+
 	remotePullReader, err := cli.ImagePull(ctx, refStr, types.ImagePullOptions{})
 	if err != nil {
 		return "", "", fmt.Errorf("cannot pull image %s: %w", refStr, err)

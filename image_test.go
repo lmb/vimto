@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/docker/docker/api/types"
 	docker "github.com/docker/docker/client"
 	"github.com/go-quicktest/qt"
 )
@@ -37,8 +38,16 @@ func TestFetchAndExtractImage(t *testing.T) {
 	tmp := t.TempDir()
 	cli := mustNewDockerClient(t)
 
+	_, err := cli.ImageRemove(context.Background(), "busybox", types.ImageRemoveOptions{Force: true})
+	qt.Assert(t, qt.IsNil(err))
+
 	refStr, digest, err := fetchImage(context.Background(), cli, "busybox")
 	qt.Assert(t, qt.IsNil(err))
+
+	refStr2, digest2, err := imageID(context.Background(), cli, refStr)
+	qt.Assert(t, qt.IsNil(err))
+	qt.Assert(t, qt.Equals(refStr, refStr2))
+	qt.Assert(t, qt.Equals(digest, digest2))
 
 	t.Log("digest is", digest)
 
