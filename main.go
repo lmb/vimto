@@ -42,7 +42,6 @@ func run(args []string) error {
 		// This is an invocation via go test -exec. Patch up the command line.
 		execFs := execFlags(nil)
 		args = append([]string{"exec"}, sortArgs(execFs, args)...)
-		fmt.Println("sorting")
 	}
 
 	fs := flag.NewFlagSet("vimto", flag.ContinueOnError)
