@@ -1,5 +1,5 @@
 mkdir ./kernel/boot
-cp ${PKG}/testdata/vmlinuz ./kernel/boot/
+cp ${KERNEL} ./kernel/boot/
 config kernel="./kernel"
 
 # Booting via a kernel image or directory adds additonal files as an overlay.

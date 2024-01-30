@@ -26,6 +26,10 @@ type imageCache struct {
 	baseDir string
 }
 
+func newImageCache(cli *docker.Client) *imageCache {
+	return &imageCache{cli, os.TempDir()}
+}
+
 func (ic *imageCache) Acquire(ctx context.Context, img string) (_ *image, err error) {
 	closeOnError := func(c io.Closer) {
 		if err != nil {

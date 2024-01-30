@@ -138,7 +138,7 @@ func execCmd(args []string) error {
 		}
 		defer cli.Close()
 
-		cache := imageCache{cli, os.TempDir()}
+		cache := newImageCache(cli)
 		oi, err := cache.Acquire(context.Background(), cfg.Kernel)
 		if err != nil {
 			return fmt.Errorf("retrieve kernel from OCI image: %w", err)

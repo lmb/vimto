@@ -52,10 +52,18 @@ func TestExecutable(t *testing.T) {
 		}
 	}
 
-	// Make package path available in the script.
-	pwd, err := os.Getwd()
+	image := os.Getenv("CI_KERNEL")
+	if image == "" {
+		image = "ghcr.io/cilium/ci-kernels:stable"
+	}
+
+	cache := newImageCache(mustNewDockerClient(t))
+	img, err := cache.Acquire(context.Background(), image)
 	qt.Assert(t, qt.IsNil(err))
-	env = append(env, "PKG="+pwd)
+	defer img.Release()
+
+	env = append(env, "IMAGE="+image)
+	env = append(env, "KERNEL="+filepath.Join(img.Directory, imageKernelPath))
 	env = append(env, fmt.Sprintf("UID=%d", os.Geteuid()))
 
 	scripttest.Test(t, context.Background(), e, env, "testdata/*.txt")

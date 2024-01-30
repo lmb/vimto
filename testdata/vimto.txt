@@ -1,4 +1,4 @@
-config kernel="${PKG}/testdata/vmlinuz"
+config kernel="${IMAGE}"
 
 # We can execute binary, with the kernel being read from the config. Exit status
 # is forwarded correctly.

@@ -1,4 +1,4 @@
-config kernel="${PKG}/testdata/vmlinuz" 'setup=["touch ''foo bar''"]' 'teardown=["rm ''foo bar''"]'
+config kernel="${IMAGE}" 'setup=["touch ''foo bar''"]' 'teardown=["rm ''foo bar''"]'
 
 # Setup and teardown programs are executed.
 vimto exec -- stat 'foo bar'
