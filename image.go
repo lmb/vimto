@@ -86,8 +86,13 @@ func (ic *imageCache) Acquire(ctx context.Context, img string) (_ *image, err er
 }
 
 func (ic *imageCache) openCacheDir(id string) (*os.File, error) {
+	base := filepath.Join(ic.baseDir, "vimto")
+	if err := os.MkdirAll(base, 0o777); err != nil {
+		return nil, err
+	}
+
 	uid := os.Getuid()
-	cacheDir := filepath.Join(ic.baseDir, "vimto", fmt.Sprint(uid), id)
+	cacheDir := filepath.Join(base, fmt.Sprint(uid), id)
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		return nil, fmt.Errorf("create cache directory: %w", err)
 	}
