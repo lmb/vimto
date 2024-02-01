@@ -3,6 +3,8 @@ package main
 import (
 	"archive/tar"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/docker/docker/api/types"
 	docker "github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/jsonmessage"
 	"golang.org/x/sys/unix"
 )
 
@@ -124,7 +127,19 @@ func fetchImage(ctx context.Context, cli *docker.Client, refStr string) (string,
 	}
 	defer remotePullReader.Close()
 
-	io.Copy(io.Discard, remotePullReader)
+	decoder := json.NewDecoder(remotePullReader)
+	for {
+		var pullResponse jsonmessage.JSONMessage
+		if err := decoder.Decode(&pullResponse); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return "", "", err
+		}
+
+		if pullResponse.Error != nil {
+			return "", "", fmt.Errorf("docker response: %w", pullResponse.Error)
+		}
+	}
 
 	return imageID(ctx, cli, refStr)
 }
