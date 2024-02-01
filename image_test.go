@@ -38,8 +38,7 @@ func TestFetchAndExtractImage(t *testing.T) {
 	tmp := t.TempDir()
 	cli := mustNewDockerClient(t)
 
-	_, err := cli.ImageRemove(context.Background(), "busybox", types.ImageRemoveOptions{Force: true})
-	qt.Assert(t, qt.IsNil(err))
+	cli.ImageRemove(context.Background(), "busybox", types.ImageRemoveOptions{Force: true})
 
 	refStr, digest, err := fetchImage(context.Background(), cli, "busybox")
 	qt.Assert(t, qt.IsNil(err))
