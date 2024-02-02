@@ -13,6 +13,12 @@ concurrency:
 jobs:
   build:
     runs-on: buildjet-2vcpu-ubuntu-2204
+    strategy:
+      matrix:
+        kernel-version: [ "stable", "4.9" ]
+    env:
+      CI_KERNEL: ghcr.io/cilium/ci-kernels:${{ matrix.kernel-version }}
+
     steps:
     - uses: actions/checkout@v3
 
