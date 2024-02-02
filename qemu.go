@@ -657,7 +657,7 @@ func (*p9Root) KArgs() []string {
 	return []string{
 		"root=/dev/root",
 		"rootfstype=9p",
-		"rootflags=trans=virtio,version=9p2000.L",
+		"rootflags=" + default9POptions,
 	}
 }
 

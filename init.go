@@ -13,6 +13,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const default9POptions = "version=9p2000.L,trans=virtio,access=any,msize=1048576"
+
 type syscaller interface {
 	mount(*mountPoint) error
 	sync()
@@ -216,7 +218,7 @@ func minimalInit(sys syscaller, args []string) error {
 			err = sys.mount(&mountPoint{
 				tag, path,
 				"9p",
-				"version=9p2000.L,trans=virtio,access=any",
+				default9POptions,
 				0,
 				false, // ignored
 			})
@@ -348,7 +350,7 @@ func prepareRoot() error {
 	//    /host     9pfs
 
 	root := hostDir
-	err := mount(p9OverlayTag, overlayDir, "9p", unix.MS_RDONLY, "version=9p2000.L,trans=virtio,access=any")
+	err := mount(p9OverlayTag, overlayDir, "9p", unix.MS_RDONLY, default9POptions)
 	if errors.Is(err, unix.ENOENT) {
 		fmt.Fprintln(os.Stderr, "Not mounting overlay:", err)
 	} else if err != nil {
