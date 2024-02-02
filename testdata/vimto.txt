@@ -4,6 +4,7 @@ config kernel="${IMAGE}"
 # is forwarded correctly.
 vimto exec true
 ! vimto exec false
+! stderr warning
 
 # Flag overrides config file.
 ! vimto exec -vm.kernel ./bogus true
