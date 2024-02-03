@@ -304,7 +304,7 @@ func executeSimpleCommands(cmds []configCommand, dir string, env []string) error
 		cmd.Stdout = os.Stdout
 		cmd.WaitDelay = time.Second
 		if err := cmd.Run(); err != nil {
-			return err
+			return fmt.Errorf("%s: %w", cmd.Path, err)
 		}
 	}
 	return nil

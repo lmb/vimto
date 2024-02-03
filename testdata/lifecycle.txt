@@ -3,3 +3,11 @@ config kernel="${IMAGE}" 'setup=["touch ''foo bar''"]' 'teardown=["rm ''foo bar'
 # Setup and teardown programs are executed.
 vimto exec -- stat 'foo bar'
 ! exists foo
+
+config kernel="${IMAGE}" 'setup=["/bin/false"]'
+! vimto exec -- true
+stderr /bin/false
+
+config kernel="${IMAGE}" 'teardown=["/bin/false"]'
+! vimto exec -- true
+stderr /bin/false
