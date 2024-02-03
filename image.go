@@ -29,8 +29,19 @@ type imageCache struct {
 	baseDir string
 }
 
-func newImageCache(cli *docker.Client) *imageCache {
-	return &imageCache{cli, os.TempDir()}
+func newImageCache(cli *docker.Client) (*imageCache, error) {
+	allCache := filepath.Join(os.TempDir(), "vimto")
+	if err := os.MkdirAll(allCache, 0777); err != nil {
+		return nil, err
+	}
+
+	uid := os.Getuid()
+	userCache := filepath.Join(allCache, fmt.Sprint(uid))
+	if err := os.Mkdir(userCache, 0755); err != nil && !errors.Is(err, os.ErrExist) {
+		return nil, fmt.Errorf("create cache directory: %w", err)
+	}
+
+	return &imageCache{cli, userCache}, nil
 }
 
 func (ic *imageCache) Acquire(ctx context.Context, img string) (_ *image, err error) {
@@ -51,7 +62,7 @@ func (ic *imageCache) Acquire(ctx context.Context, img string) (_ *image, err er
 	}
 	defer closeOnError(cacheDir)
 
-	if err := flock(cacheDir, unix.LOCK_SH); err != nil {
+	if err := fcntlLock(cacheDir, unix.F_OFD_SETLKW, unix.F_RDLCK); err != nil {
 		return nil, fmt.Errorf("lock %q: %w", cacheDir.Name(), err)
 	}
 
@@ -62,7 +73,8 @@ func (ic *imageCache) Acquire(ctx context.Context, img string) (_ *image, err er
 	}
 
 	// Need to extract the image, acquire exclusive lock.
-	if err := flock(cacheDir, unix.LOCK_EX); err != nil {
+	// This switch must be atomic.
+	if err := fcntlLock(cacheDir, unix.F_OFD_SETLKW, unix.F_WRLCK); err != nil {
 		return nil, fmt.Errorf("lock %q: %w", cacheDir.Name(), err)
 	}
 
@@ -81,7 +93,7 @@ func (ic *imageCache) Acquire(ctx context.Context, img string) (_ *image, err er
 	}
 
 	// Drop the exclusive lock.
-	if err := flock(cacheDir, unix.LOCK_SH); err != nil {
+	if err := fcntlLock(cacheDir, unix.F_OFD_SETLKW, unix.F_RDLCK); err != nil {
 		return nil, fmt.Errorf("drop exclusive lock: %w", err)
 	}
 
@@ -89,14 +101,9 @@ func (ic *imageCache) Acquire(ctx context.Context, img string) (_ *image, err er
 }
 
 func (ic *imageCache) openCacheDir(id string) (*os.File, error) {
-	base := filepath.Join(ic.baseDir, "vimto")
-	if err := os.MkdirAll(base, 0o777); err != nil {
-		return nil, err
-	}
+	cacheDir := filepath.Join(ic.baseDir, id)
 
-	uid := os.Getuid()
-	cacheDir := filepath.Join(base, fmt.Sprint(uid), id)
-	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+	if err := os.Mkdir(cacheDir, 0755); err != nil && !errors.Is(err, os.ErrExist) {
 		return nil, fmt.Errorf("create cache directory: %w", err)
 	}
 

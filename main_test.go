@@ -57,7 +57,8 @@ func TestExecutable(t *testing.T) {
 		image = "ghcr.io/cilium/ci-kernels:stable"
 	}
 
-	cache := newImageCache(mustNewDockerClient(t))
+	cache, err := newImageCache(mustNewDockerClient(t))
+	qt.Assert(t, qt.IsNil(err))
 	img, err := cache.Acquire(context.Background(), image)
 	qt.Assert(t, qt.IsNil(err))
 	defer img.Release()
