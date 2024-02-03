@@ -14,16 +14,16 @@ import (
 
 func TestCacheAcquire(t *testing.T) {
 	cli := mustNewDockerClient(t)
-	cache := imageCache{cli, t.TempDir()}
+	cache := imageCache{t.TempDir()}
 
-	img1, err := cache.Acquire(context.Background(), "busybox")
+	img1, err := cache.Acquire(context.Background(), cli, "busybox")
 	qt.Assert(t, qt.IsNil(err))
 	defer img1.Release()
 
 	qt.Assert(t, qt.IsFalse(img1.cached))
 
 	start := time.Now()
-	img2, err := cache.Acquire(context.Background(), "busybox")
+	img2, err := cache.Acquire(context.Background(), cli, "busybox")
 	delta := time.Since(start)
 	qt.Assert(t, qt.IsTrue(delta < 100*time.Millisecond))
 	qt.Assert(t, qt.IsNil(err))

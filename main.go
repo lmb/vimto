@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	docker "github.com/docker/docker/client"
 	"golang.org/x/sys/unix"
 )
 
@@ -40,8 +39,9 @@ func main() {
 func run(args []string) error {
 	if len(args) > 0 && filepath.IsAbs(args[0]) && unix.Access(args[0], unix.X_OK) == nil {
 		// This is an invocation via go test -exec. Patch up the command line.
-		execFs := execFlags(nil)
-		args = append([]string{"exec"}, sortArgs(execFs, args)...)
+		fs := flag.NewFlagSet("", flag.ContinueOnError)
+		configFlags(fs)
+		args = append([]string{"exec"}, sortArgs(fs, args)...)
 	}
 
 	fs := flag.NewFlagSet("vimto", flag.ContinueOnError)
@@ -63,7 +63,9 @@ func run(args []string) error {
 	var err error
 	switch fs.Arg(0) {
 	case "exec":
-		err = execCmd(fs.Args()[1:])
+		err = cliExec(fs.Args()[1:])
+	case "delve":
+		err = cliDelve(fs.Args()[1:])
 	default:
 		fs.Usage()
 		return fmt.Errorf("unknown command %q", fs.Arg(0))
@@ -76,28 +78,9 @@ func run(args []string) error {
 	return nil
 }
 
-func execFlags(cfg *config) *flag.FlagSet {
+func cliExec(args []string) error {
 	fs := flag.NewFlagSet("exec", flag.ContinueOnError)
-	fs.Func("vm.kernel", "`path or url` to the Linux image", func(s string) error {
-		cfg.Kernel = s
-		return nil
-	})
-	fs.Func("vm.memory", "memory to give to the VM", func(s string) error {
-		cfg.Memory = s
-		return nil
-	})
-	fs.Func("vm.smp", "", func(s string) error {
-		cfg.SMP = s
-		return nil
-	})
-	fs.BoolFunc("vm.sudo", "execute as root", func(s string) error {
-		if s != "true" {
-			return errors.New("flag only accepts true")
-		}
-
-		cfg.User = "root"
-		return nil
-	})
+	cfg := configFlags(fs)
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Usage: %s [flags] [--] </path/to/binary> [flags of binary]\n", fs.Name())
 		fmt.Fprintln(fs.Output())
@@ -105,13 +88,7 @@ func execFlags(cfg *config) *flag.FlagSet {
 		fmt.Fprintln(fs.Output())
 	}
 
-	return fs
-}
-
-func execCmd(args []string) error {
-	cfg := *defaultConfig
-	fs := execFlags(&cfg)
-	if err := parseConfigFromTOML(".", &cfg); err != nil {
+	if err := parseConfigFromTOML(".", cfg); err != nil {
 		return fmt.Errorf("read config: %w", err)
 	}
 
@@ -124,67 +101,105 @@ func execCmd(args []string) error {
 		return fmt.Errorf("missing arguments")
 	}
 
-	if cfg.Kernel == "" {
-		return fmt.Errorf("specify a kernel via -vm.kernel")
+	cache, err := newImageCache()
+	if err != nil {
+		return fmt.Errorf("image cache: %w", err)
 	}
 
-	var vmlinuz string
-	var rootOverlay string
-	if info, err := os.Stat(cfg.Kernel); errors.Is(err, os.ErrNotExist) {
-		// Assume that kernel is a reference to an image.
-		cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
-		if err != nil {
-			return fmt.Errorf("create docker client: %w", err)
-		}
-		defer cli.Close()
-
-		cache, err := newImageCache(cli)
-		if err != nil {
-			return fmt.Errorf("image cache: %w", err)
-		}
-
-		oi, err := cache.Acquire(context.Background(), cfg.Kernel)
-		if err != nil {
-			return fmt.Errorf("retrieve kernel from OCI image: %w", err)
-		}
-		defer oi.Release()
-
-		rootOverlay = oi.Directory
-		vmlinuz = filepath.Join(oi.Directory, imageKernelPath)
-	} else if err == nil {
-		if info.IsDir() {
-			// Kernel is path to an extracted image on disk.
-			rootOverlay = cfg.Kernel
-			vmlinuz = filepath.Join(rootOverlay, imageKernelPath)
-		} else {
-			// Kernel is a file on disk.
-			vmlinuz = cfg.Kernel
-		}
-	} else {
-		// Unexpected error from stat, maybe not allowed to access it?
-		return fmt.Errorf("kernel: %w", err)
+	vmlinuz, rootOverlay, img, err := cfg.deriveKernelAndOverlay(cache)
+	if err != nil {
+		return err
 	}
-
-	if _, err := os.Stat(vmlinuz); err != nil {
-		return fmt.Errorf("invalid kernel: %w", err)
-	}
+	defer img.Release()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
 	cmd := &command{
-		Kernel:      vmlinuz,
-		Memory:      cfg.Memory,
-		SMP:         cfg.SMP,
-		Path:        fs.Arg(0),
-		Args:        fs.Args(),
-		User:        cfg.User,
-		Stdin:       os.Stdin,
-		Stdout:      os.Stdout,
-		Stderr:      os.Stderr,
-		RootOverlay: rootOverlay,
-		Setup:       cfg.Setup,
-		Teardown:    cfg.Teardown,
+		Kernel:           vmlinuz,
+		Memory:           cfg.Memory,
+		SMP:              cfg.SMP,
+		Path:             fs.Arg(0),
+		Args:             fs.Args(),
+		User:             cfg.User,
+		Stdin:            os.Stdin,
+		Stdout:           os.Stdout,
+		Stderr:           os.Stderr,
+		RootOverlay:      rootOverlay,
+		Setup:            cfg.Setup,
+		Teardown:         cfg.Teardown,
+		EnableNetworking: true,
+	}
+
+	if err := cmd.Start(ctx); err != nil {
+		return err
+	}
+
+	if err := cmd.Wait(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func cliDelve(args []string) error {
+	fs := flag.NewFlagSet("delve", flag.ContinueOnError)
+	cfg := configFlags(fs)
+	port := fs.Int("port", 2345, "host and port to listen on")
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "Usage: %s [flags]\n", fs.Name())
+		fmt.Fprintln(fs.Output())
+		fs.PrintDefaults()
+		fmt.Fprintln(fs.Output())
+	}
+
+	if err := parseConfigFromTOML(".", cfg); err != nil {
+		return fmt.Errorf("read config: %w", err)
+	}
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if fs.NArg() != 0 {
+		fs.Usage()
+		return fmt.Errorf("command does not accept arguments")
+	}
+
+	if *port == 0 {
+		return fmt.Errorf("invalid port %d", *port)
+	}
+
+	cache, err := newImageCache()
+	if err != nil {
+		return err
+	}
+
+	vmlinuz, rootOverlay, img, err := cfg.deriveKernelAndOverlay(cache)
+	if err != nil {
+		return err
+	}
+	defer img.Release()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	cmd := &command{
+		Kernel: vmlinuz,
+		Memory: cfg.Memory,
+		SMP:    cfg.SMP,
+		Path:   "netcat",
+		Args:   []string{"netcat", "-l", "localhost", fmt.Sprint(*port)},
+		// Args:              []string{"dlv", "dap", "--listen", fmt.Sprintf("localhost:%d", *port)},
+		User:              cfg.User,
+		Stdin:             os.Stdin,
+		Stdout:            os.Stdout,
+		Stderr:            os.Stderr,
+		RootOverlay:       rootOverlay,
+		Setup:             cfg.Setup,
+		Teardown:          cfg.Teardown,
+		EnableNetworking:  true,
+		ForwardedTCPPorts: []int{*port},
 	}
 
 	if err := cmd.Start(ctx); err != nil {

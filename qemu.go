@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/u-root/u-root/pkg/qemu"
@@ -54,6 +55,9 @@ type command struct {
 
 	SerialPorts       map[string]*os.File
 	SharedDirectories []string
+
+	EnableNetworking  bool
+	ForwardedTCPPorts []int
 
 	cmd   *exec.Cmd
 	tasks errgroup.Group
@@ -209,6 +213,17 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		})
 	}
 
+	setup := cmd.Setup
+	if cmd.EnableNetworking {
+		setup = append([]configCommand{
+			{"ip", "addr", "add", "10.0.2.15/24", "dev", "eth0"},
+			{"ip", "link", "set", "dev", "eth0", "up"},
+		}, cmd.Setup...)
+		devices = append(devices, &userNetworking{cmd.ForwardedTCPPorts})
+	} else if len(cmd.ForwardedTCPPorts) != 0 {
+		return fmt.Errorf("network disabled but port forward requested")
+	}
+
 	uid := os.Geteuid()
 	gid := os.Getegid()
 	if cmd.User != "" {
@@ -234,7 +249,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		dir,
 		uid, gid,
 		cmd.Env,
-		cmd.Setup, cmd.Teardown,
+		setup, cmd.Teardown,
 		mountTags,
 	}
 
@@ -677,5 +692,28 @@ func (p9sd *p9SharedDirectory) Cmdline() []string {
 }
 
 func (*p9SharedDirectory) KArgs() []string {
+	return nil
+}
+
+type userNetworking struct {
+	HostTCPPorts []int
+}
+
+func (unet *userNetworking) Cmdline() []string {
+	ports := slices.Clone(unet.HostTCPPorts)
+	slices.Sort(ports)
+
+	args := []string{"user,id=default"}
+	for _, port := range ports {
+		args = append(args, fmt.Sprintf("hostfwd=tcp:127.0.0.1:%d-10.0.2.15:%d", port, port))
+	}
+
+	return []string{
+		"-netdev", strings.Join(args, ","),
+		"-device", "virtio-net,netdev=default",
+	}
+}
+
+func (*userNetworking) KArgs() []string {
 	return nil
 }

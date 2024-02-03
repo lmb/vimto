@@ -25,11 +25,10 @@ const imageKernelPath = "boot/vmlinuz"
 //
 // The main concern is startup speed of vimto.
 type imageCache struct {
-	cli     *docker.Client
 	baseDir string
 }
 
-func newImageCache(cli *docker.Client) (*imageCache, error) {
+func newImageCache() (*imageCache, error) {
 	allCache := filepath.Join(os.TempDir(), "vimto")
 	if err := os.MkdirAll(allCache, 0777); err != nil {
 		return nil, err
@@ -41,17 +40,17 @@ func newImageCache(cli *docker.Client) (*imageCache, error) {
 		return nil, fmt.Errorf("create cache directory: %w", err)
 	}
 
-	return &imageCache{cli, userCache}, nil
+	return &imageCache{userCache}, nil
 }
 
-func (ic *imageCache) Acquire(ctx context.Context, img string) (_ *image, err error) {
+func (ic *imageCache) Acquire(ctx context.Context, cli *docker.Client, img string) (_ *image, err error) {
 	closeOnError := func(c io.Closer) {
 		if err != nil {
 			c.Close()
 		}
 	}
 
-	refStr, digest, err := fetchImage(ctx, ic.cli, img)
+	refStr, digest, err := fetchImage(ctx, cli, img)
 	if err != nil {
 		return nil, fmt.Errorf("fetch image: %w", err)
 	}
@@ -84,7 +83,7 @@ func (ic *imageCache) Acquire(ctx context.Context, img string) (_ *image, err er
 	}
 	defer os.RemoveAll(tmpdir)
 
-	if err := extractImage(ctx, ic.cli, refStr, tmpdir); err != nil {
+	if err := extractImage(ctx, cli, refStr, tmpdir); err != nil {
 		return nil, fmt.Errorf("extract image: %w", err)
 	}
 
@@ -117,6 +116,9 @@ type image struct {
 }
 
 func (img *image) Release() error {
+	if img != nil {
+		return nil
+	}
 	return img.dir.Close()
 }
 
