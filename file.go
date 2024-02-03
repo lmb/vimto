@@ -20,14 +20,14 @@ func replaceFdWithFile(sys syscaller, fd int, file *os.File) error {
 	return nil
 }
 
-func flock(f *os.File, how int) error {
+func fcntlLock(f *os.File, cmd int, typ int16) error {
 	_, err := fileControl(f, func(fd uintptr) (struct{}, error) {
-		return struct{}{}, unix.Flock(int(fd), how)
+		lock := unix.Flock_t{
+			Type: typ,
+		}
+		return struct{}{}, unix.FcntlFlock(fd, cmd, &lock)
 	})
-	if err != nil {
-		return fmt.Errorf("flock: %w", err)
-	}
-	return nil
+	return err
 }
 
 func unixSocketpair() (*os.File, *os.File, error) {
