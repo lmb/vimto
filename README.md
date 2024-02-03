@@ -1,5 +1,7 @@
 # vimto
 
+![vimto logo](logo.png "vimto: virtual machine testing orchestrator")
+
 `vimto` is a virtual machine testing orchestrator for the Go toolchain. It allows you to easily run Go unit tests using a specific Linux kernel.
 
 ```shell
