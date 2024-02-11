@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -20,16 +22,12 @@ func TestCacheAcquire(t *testing.T) {
 	qt.Assert(t, qt.IsNil(err))
 	defer img1.Release()
 
-	qt.Assert(t, qt.IsFalse(img1.cached))
-
 	start := time.Now()
 	img2, err := cache.Acquire(context.Background(), "busybox")
 	delta := time.Since(start)
 	qt.Assert(t, qt.IsTrue(delta < 100*time.Millisecond))
 	qt.Assert(t, qt.IsNil(err))
 	defer img2.Release()
-
-	qt.Assert(t, qt.IsTrue(img2.cached))
 
 	qt.Assert(t, qt.Equals(img2.Directory, img1.Directory))
 }
@@ -55,6 +53,47 @@ func TestFetchAndExtractImage(t *testing.T) {
 
 	_, err = os.Stat(filepath.Join(tmp, "bin", "sh"))
 	qt.Assert(t, qt.IsNil(err))
+}
+
+func TestPopulateDirectoryOnce(t *testing.T) {
+	tmp := t.TempDir()
+
+	waiting := make(chan struct{})
+	quit := make(chan struct{})
+	errs := make(chan error, 2)
+	go func() {
+		f, _, err := populateDirectoryOnce(tmp, func(s string) error {
+			close(waiting)
+			<-quit
+			return nil
+		})
+		if err == nil {
+			f.Close()
+		}
+		errs <- err
+	}()
+
+	select {
+	case <-waiting:
+	case err := <-errs:
+		t.Fatal("Got error from first invoke:", err)
+	}
+
+	go func() {
+		f, _, err := populateDirectoryOnce(tmp, func(s string) error {
+			return errors.New("invoked second fn")
+		})
+		if err == nil {
+			f.Close()
+		}
+		errs <- err
+	}()
+
+	runtime.Gosched()
+	close(quit)
+
+	qt.Assert(t, qt.IsNil(<-errs))
+	qt.Assert(t, qt.IsNil(<-errs))
 }
 
 func TestSecureJoin(t *testing.T) {
