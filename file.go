@@ -20,12 +20,9 @@ func replaceFdWithFile(sys syscaller, fd int, file *os.File) error {
 	return nil
 }
 
-func fcntlLock(f *os.File, cmd int, typ int16) error {
+func flock(f *os.File, how int) error {
 	_, err := fileControl(f, func(fd uintptr) (struct{}, error) {
-		lock := unix.Flock_t{
-			Type: typ,
-		}
-		return struct{}{}, unix.FcntlFlock(fd, cmd, &lock)
+		return struct{}{}, unix.Flock(int(fd), how)
 	})
 	return err
 }

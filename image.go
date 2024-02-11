@@ -45,75 +45,86 @@ func newImageCache(cli *docker.Client) (*imageCache, error) {
 }
 
 func (ic *imageCache) Acquire(ctx context.Context, img string) (_ *image, err error) {
+	refStr, digest, err := fetchImage(ctx, ic.cli, img)
+	if err != nil {
+		return nil, fmt.Errorf("fetch image: %w", err)
+	}
+
+	lock, path, err := populateDirectoryOnce(filepath.Join(ic.baseDir, digest), func(path string) error {
+		return extractImage(ctx, ic.cli, refStr, path)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &image{path, lock}, nil
+}
+
+func populateDirectoryOnce(path string, fn func(string) error) (lock *os.File, _ string, err error) {
 	closeOnError := func(c io.Closer) {
 		if err != nil {
 			c.Close()
 		}
 	}
 
-	refStr, digest, err := fetchImage(ctx, ic.cli, img)
+	if err := os.Mkdir(path, 0755); err != nil && !errors.Is(err, os.ErrExist) {
+		return nil, "", fmt.Errorf("create cache directory: %w", err)
+	}
+
+	dir, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("fetch image: %w", err)
+		return nil, "", err
+	}
+	defer closeOnError(dir)
+
+	if err := flock(dir, unix.LOCK_SH); err != nil {
+		return nil, "", fmt.Errorf("lock %q: %w", dir.Name(), err)
 	}
 
-	cacheDir, err := ic.openCacheDir(digest)
-	if err != nil {
-		return nil, err
-	}
-	defer closeOnError(cacheDir)
-
-	if err := fcntlLock(cacheDir, unix.F_OFD_SETLKW, unix.F_RDLCK); err != nil {
-		return nil, fmt.Errorf("lock %q: %w", cacheDir.Name(), err)
-	}
-
-	contents := filepath.Join(cacheDir.Name(), "contents")
+	contents := filepath.Join(dir.Name(), "contents")
 	if _, err := os.Stat(contents); err == nil {
 		// We have a cached copy of the image.
-		return &image{contents, cacheDir, true}, nil
+		return dir, contents, nil
 	}
 
 	// Need to extract the image, acquire exclusive lock.
-	// This switch must be atomic.
-	if err := fcntlLock(cacheDir, unix.F_OFD_SETLKW, unix.F_WRLCK); err != nil {
-		return nil, fmt.Errorf("lock %q: %w", cacheDir.Name(), err)
+	if err := flock(dir, unix.LOCK_EX); err != nil {
+		return nil, "", fmt.Errorf("lock %q: %w", dir.Name(), err)
 	}
 
-	tmpdir, err := os.MkdirTemp(ic.baseDir, "")
+	// Changing lock mode is not atomic, revalidate.
+	if _, err := os.Stat(contents); err == nil {
+		if err := flock(dir, unix.LOCK_SH); err != nil {
+			return nil, "", fmt.Errorf("lock %q: %w", dir.Name(), err)
+		}
+		return dir, contents, nil
+	}
+
+	tmpdir, err := os.MkdirTemp(path, "")
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer os.RemoveAll(tmpdir)
 
-	if err := extractImage(ctx, ic.cli, refStr, tmpdir); err != nil {
-		return nil, fmt.Errorf("extract image: %w", err)
+	if err := fn(tmpdir); err != nil {
+		return nil, "", fmt.Errorf("populate %s: %w", contents, err)
 	}
 
 	if err := os.Rename(tmpdir, contents); err != nil {
-		return nil, fmt.Errorf("rename temporary directory: %w", err)
+		return nil, "", err
 	}
 
 	// Drop the exclusive lock.
-	if err := fcntlLock(cacheDir, unix.F_OFD_SETLKW, unix.F_RDLCK); err != nil {
-		return nil, fmt.Errorf("drop exclusive lock: %w", err)
+	if err := flock(dir, unix.LOCK_SH); err != nil {
+		return nil, "", fmt.Errorf("drop exclusive lock: %w", err)
 	}
 
-	return &image{contents, cacheDir, false}, nil
-}
-
-func (ic *imageCache) openCacheDir(id string) (*os.File, error) {
-	cacheDir := filepath.Join(ic.baseDir, id)
-
-	if err := os.Mkdir(cacheDir, 0755); err != nil && !errors.Is(err, os.ErrExist) {
-		return nil, fmt.Errorf("create cache directory: %w", err)
-	}
-
-	return os.Open(cacheDir)
+	return dir, contents, nil
 }
 
 type image struct {
 	Directory string
 	dir       *os.File
-	cached    bool
 }
 
 func (img *image) Release() error {
