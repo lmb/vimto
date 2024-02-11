@@ -78,7 +78,7 @@ func fileControl[T any](f *os.File, fn func(fd uintptr) (T, error)) (T, error) {
 		return result, fmt.Errorf("control fd: %w", err)
 	}
 	if opErr != nil {
-		return result, err
+		return result, opErr
 	}
 
 	return result, nil
