@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
+  amd64:
     runs-on: buildjet-2vcpu-ubuntu-2204
     strategy:
       matrix:
@@ -39,3 +39,46 @@ jobs:
 
     - name: Test
       run: go test -v ./...
+
+  arm64:
+    runs-on: buildjet-2vcpu-ubuntu-2204-arm
+    strategy:
+      matrix:
+        kernel-version: [ "stable" ]
+    env:
+      CI_KERNEL: ghcr.io/cilium/ci-kernels:${{ matrix.kernel-version }}
+      VIMTO_DISABLE_KVM: "true"
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version-file: 'go.mod'
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends qemu-system-aarch64
+
+    - name: Build
+      run: go build -v ./...
+
+    - name: Test
+      run: go test -v ./...
+
+  results:
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    name: Results
+    needs:
+    - amd64
+    - arm64
+    steps:
+    - run: exit 1
+      if: >-
+        ${{
+              contains(needs.*.result, 'failure')
+          || contains(needs.*.result, 'cancelled')
+        }}
