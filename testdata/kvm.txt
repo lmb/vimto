@@ -1,0 +1,6 @@
+config kernel="${IMAGE}"
+
+# Ensure that running without KVM is supported.
+env VIMTO_DISABLE_KVM=true
+vimto exec true
+stderr 'KVM disabled'

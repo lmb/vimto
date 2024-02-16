@@ -23,6 +23,8 @@ import (
 
 const p9OverlayTag = "overlay"
 
+const envDisableKVM = "VIMTO_DISABLE_KVM"
+
 // command is a binary to be executed under a different kernel.
 //
 // Mirrors exec.Cmd.
@@ -114,8 +116,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		qemu.ArbitraryArgs{
 			"-nodefaults",
 			"-display", "none",
-			"-enable-kvm",
-			"-cpu", "host",
+			"-cpu", "max",
 			"-chardev", "stdio,id=stdio",
 			"-m", cmd.Memory,
 			"-smp", cmd.SMP,
@@ -136,6 +137,20 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		consoleOnSerialPort{consolePort},
 	}
 
+	disableKVM := false
+	if env := os.Getenv(envDisableKVM); env != "" {
+		disableKVM, err = strconv.ParseBool(env)
+		if err != nil {
+			return fmt.Errorf("%s: %w", envDisableKVM, err)
+		}
+	}
+
+	if !disableKVM {
+		devices = append(devices, qemu.ArbitraryArgs{"-enable-kvm"})
+	} else if cmd.Stderr != nil {
+		fmt.Fprintln(os.Stderr, "Warning: KVM disabled, performance will be limited.")
+	}
+
 	var binary string
 	switch runtime.GOARCH {
 	case "amd64":
@@ -145,7 +160,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	case "arm64":
 		binary = "qemu-system-aarch64"
 		devices = append(devices,
-			qemu.ArbitraryArgs{"-machine", "virt,gic-version=host"},
+			qemu.ArbitraryArgs{"-machine", "virt,gic-version=max"},
 			earlycon{},
 		)
 
