@@ -44,6 +44,7 @@ func TestExecutable(t *testing.T) {
 			"XDG_",
 			"PATH=",
 			"HOME=",
+			"VIMTO_",
 		} {
 			if strings.HasPrefix(v, prefix) {
 				env = append(env, v)
