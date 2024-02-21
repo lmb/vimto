@@ -34,6 +34,9 @@ type command struct {
 	Memory string
 	// SMP is passed verbatim as the QEMU -smp flag.
 	SMP string
+	// Enabled the GDB server on the specified address. The VM will be
+	// paused on startup and wait for a "continue" from a gdb client.
+	GDB string
 	// Path to the binary to execute.
 	Path string
 	// Arguments passed to the binary. The first element is conventionally Path.
@@ -129,7 +132,6 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		&p9Root{
 			"/",
 		},
-		// enableGDBServer{},
 		fds,
 		cds,
 		ports,
@@ -241,6 +243,10 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		if err != nil {
 			return fmt.Errorf("parse gid: %w", err)
 		}
+	}
+
+	if cmd.GDB != "" {
+		devices = append(devices, gdbServer{cmd.GDB})
 	}
 
 	execCmd := execCommand{
@@ -644,14 +650,16 @@ func (disableRaidAutodetect) KArgs() []string {
 	return []string{"raid=noautodetect"}
 }
 
-type enableGDBServer struct{}
-
-func (enableGDBServer) Cmdline() []string {
-	return []string{"-s", "-S"}
+type gdbServer struct {
+	Listen string
 }
 
-func (enableGDBServer) KArgs() []string {
-	return nil
+func (gs gdbServer) Cmdline() []string {
+	return []string{"-gdb", gs.Listen, "-S"}
+}
+
+func (gdbServer) KArgs() []string {
+	return []string{"nokaslr"}
 }
 
 type fsdev string
