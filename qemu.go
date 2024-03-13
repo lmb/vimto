@@ -684,9 +684,14 @@ type p9SharedDirectory struct {
 }
 
 func (p9sd *p9SharedDirectory) Cmdline() []string {
+	readOnly := "off"
+	if p9sd.ReadOnly {
+		readOnly = "on"
+	}
+
 	return []string{
 		// Need security_model=none due to https://gitlab.com/qemu-project/qemu/-/issues/173
-		"-fsdev", fmt.Sprintf("local,id=%s,path=%s,readonly=%t,security_model=none,multidevs=remap", p9sd.ID, p9sd.Path, p9sd.ReadOnly),
+		"-fsdev", fmt.Sprintf("local,id=%s,path=%s,readonly=%s,security_model=none,multidevs=remap", p9sd.ID, p9sd.Path, readOnly),
 		"-device", fmt.Sprintf("virtio-9p-pci,fsdev=%s,mount_tag=%s", p9sd.ID, p9sd.Tag),
 	}
 }
