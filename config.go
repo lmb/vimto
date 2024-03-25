@@ -18,6 +18,7 @@ type config struct {
 	Memory   string          `toml:"memory"`
 	SMP      string          `toml:"smp"`
 	User     string          `toml:"user"`
+	GDB      string          `toml:"-"`
 	Setup    []configCommand `toml:"setup"`
 	Teardown []configCommand `toml:"teardown"`
 }

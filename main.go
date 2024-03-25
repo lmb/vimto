@@ -86,7 +86,7 @@ func execFlags(cfg *config) *flag.FlagSet {
 		cfg.Memory = s
 		return nil
 	})
-	fs.Func("vm.smp", "", func(s string) error {
+	fs.Func("vm.smp", "cpu configuration of the VM", func(s string) error {
 		cfg.SMP = s
 		return nil
 	})
@@ -96,6 +96,14 @@ func execFlags(cfg *config) *flag.FlagSet {
 		}
 
 		cfg.User = "root"
+		return nil
+	})
+	fs.BoolFunc("vm.gdb", "enable GDB server", func(s string) error {
+		if s != "true" {
+			return errors.New("flag only accepts true")
+		}
+
+		cfg.GDB = "tcp:localhost:1234"
 		return nil
 	})
 	fs.Usage = func() {
@@ -176,6 +184,7 @@ func execCmd(args []string) error {
 		Kernel:      vmlinuz,
 		Memory:      cfg.Memory,
 		SMP:         cfg.SMP,
+		GDB:         cfg.GDB,
 		Path:        fs.Arg(0),
 		Args:        fs.Args(),
 		User:        cfg.User,
