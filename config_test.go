@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -87,6 +88,20 @@ func TestWriteConfig(t *testing.T) {
 	qt.Assert(t, qt.IsNil(err))
 	defer f.Close()
 	qt.Assert(t, qt.IsNil(toml.NewEncoder(f).Encode(defaultConfig)))
+}
+
+func TestConfigFlags(t *testing.T) {
+	var cfg config
+	fs := configFlags("test", &cfg)
+	fs.SetOutput(io.Discard)
+
+	err := fs.Parse([]string{"-vm.kernel", ":foo"})
+	qt.Assert(t, qt.IsNotNil(err))
+
+	cfg.Kernel = "example.org/image:bar"
+	err = fs.Parse([]string{"-vm.kernel", ":foo"})
+	qt.Assert(t, qt.IsNil(err))
+	qt.Assert(t, qt.Equals(cfg.Kernel, "example.org/image:foo"))
 }
 
 func mustWriteConfig(tb testing.TB, dir, contents string) string {

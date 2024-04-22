@@ -40,7 +40,7 @@ func main() {
 func run(args []string) error {
 	if len(args) > 0 && filepath.IsAbs(args[0]) && unix.Access(args[0], unix.X_OK) == nil {
 		// This is an invocation via go test -exec. Patch up the command line.
-		execFs := execFlags(nil)
+		execFs := configFlags("exec", nil)
 		args = append([]string{"exec"}, sortArgs(execFs, args)...)
 	}
 
@@ -76,41 +76,15 @@ func run(args []string) error {
 	return nil
 }
 
-func execFlags(cfg *config) *flag.FlagSet {
-	fs := flag.NewFlagSet("exec", flag.ContinueOnError)
-	fs.Func("vm.kernel", "`path or url` to the Linux image", func(s string) error {
-		cfg.Kernel = s
-		return nil
-	})
-	fs.Func("vm.memory", "memory to give to the VM", func(s string) error {
-		cfg.Memory = s
-		return nil
-	})
-	fs.Func("vm.smp", "", func(s string) error {
-		cfg.SMP = s
-		return nil
-	})
-	fs.BoolFunc("vm.sudo", "execute as root", func(s string) error {
-		if s != "true" {
-			return errors.New("flag only accepts true")
-		}
-
-		cfg.User = "root"
-		return nil
-	})
+func execCmd(args []string) error {
+	cfg := *defaultConfig
+	fs := configFlags("exec", &cfg)
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Usage: %s [flags] [--] </path/to/binary> [flags of binary]\n", fs.Name())
 		fmt.Fprintln(fs.Output())
 		fs.PrintDefaults()
 		fmt.Fprintln(fs.Output())
 	}
-
-	return fs
-}
-
-func execCmd(args []string) error {
-	cfg := *defaultConfig
-	fs := execFlags(&cfg)
 	if err := parseConfigFromTOML(".", &cfg); err != nil {
 		return fmt.Errorf("read config: %w", err)
 	}
