@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -74,6 +75,46 @@ func parseConfigFromTOML(dir string, cfg *config) error {
 	}
 
 	return fmt.Errorf("%q: %w: %s", f.Name(), errUnrecognisedKeys, strings.Join(keys, ", "))
+}
+
+func configFlags(name string, cfg *config) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.Func("vm.kernel", "`path or url` to the Linux image (use ':tag' to substitute tag in url)", func(s string) error {
+		if !strings.HasPrefix(s, ":") {
+			cfg.Kernel = s
+			return nil
+		}
+
+		tag := s[1:]
+		if strings.Contains(tag, ":") {
+			return fmt.Errorf("tag %q contains colons", tag)
+		}
+		image, _, found := strings.Cut(cfg.Kernel, ":")
+		if !found {
+			return fmt.Errorf("no tag in image %q (missing colon)", cfg.Kernel)
+		}
+
+		cfg.Kernel = fmt.Sprintf("%s:%s", image, tag)
+		return nil
+	})
+	fs.Func("vm.memory", "memory to give to the VM", func(s string) error {
+		cfg.Memory = s
+		return nil
+	})
+	fs.Func("vm.smp", "", func(s string) error {
+		cfg.SMP = s
+		return nil
+	})
+	fs.BoolFunc("vm.sudo", "execute as root", func(s string) error {
+		if s != "true" {
+			return errors.New("flag only accepts true")
+		}
+
+		cfg.User = "root"
+		return nil
+	})
+
+	return fs
 }
 
 func findConfigFile(dir string) (*os.File, error) {
