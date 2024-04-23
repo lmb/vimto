@@ -22,11 +22,20 @@ exec go test -exec vimto -run Success -race .
 # Add a test once we know what to do with this.
 # exec go test -exec "vimto arg" -run Success .
 
+# Building packages within the VM works.
+vimto exec go build -x .
+
 -- go.mod --
 
 module test
 
 go 1.21
+
+-- main.go --
+
+package main
+
+func main() {}
 
 -- main_test.go --
 

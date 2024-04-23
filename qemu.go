@@ -172,9 +172,9 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		virtioPorts.Chardevs[cds.addFdSet(fds.addFile(port))] = name
 	}
 
-	dir := cmd.Dir
-	if dir == "" {
-		dir, err = os.Getwd()
+	wd := cmd.Dir
+	if wd == "" {
+		wd, err = os.Getwd()
 		if err != nil {
 			return err
 		}
@@ -183,29 +183,23 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	// Ensure that the binary and the working directory are always available
 	// in the guest.
 	sharedDirectories := slices.Clone(cmd.SharedDirectories)
-	for _, dir := range []string{filepath.Dir(cmd.Path), dir} {
-		fstype, found := earlyMounts.pathIsBelowMount(dir)
-		if !found {
-			continue
-		}
+	sharedDirectories = append(sharedDirectories, filepath.Dir(cmd.Path), wd)
+	slices.Sort(sharedDirectories)
+	sharedDirectories = slices.Compact(sharedDirectories)
 
-		if fstype != "tmpfs" {
+	mountTags := make(map[string]string)
+	for i, dir := range sharedDirectories {
+		fstype, found := earlyMounts.pathIsBelowMount(dir)
+		if found && fstype != "tmpfs" {
 			return fmt.Errorf("directory %s is shadowed by %s mount in the guest", dir, fstype)
 		}
 
-		sharedDirectories = append(sharedDirectories, dir)
-	}
-	slices.Sort(sharedDirectories)
-	slices.Compact(sharedDirectories)
-
-	mountTags := make(map[string]string)
-	for i, path := range sharedDirectories {
 		id := fmt.Sprintf("sd-9p-%d", i)
-		mountTags[id] = path
+		mountTags[id] = dir
 		devices = append(devices, &p9SharedDirectory{
 			ID:   fsdev(id),
 			Tag:  id,
-			Path: path,
+			Path: dir,
 		})
 	}
 
@@ -246,7 +240,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	execCmd := execCommand{
 		cmd.Path,
 		cmd.Args,
-		dir,
+		wd,
 		uid, gid,
 		cmd.Env,
 		cmd.Setup, cmd.Teardown,

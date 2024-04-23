@@ -13,7 +13,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const default9POptions = "version=9p2000.L,trans=virtio,access=any,msize=1048576"
+// Default options used to mount a 9pfs.
+//
+// - cache=mmap: required to avoid mmap returning EINVAL.
+const default9POptions = "version=9p2000.L,trans=virtio,access=any,msize=1048576,cache=mmap"
 
 type syscaller interface {
 	mount(*mountPoint) error
@@ -52,8 +55,9 @@ func mount(source, target, fstype string, flags uintptr, data string) error {
 	return nil
 }
 
-func mountOverlay(target string, lowerdirs ...string) error {
+func mountOverlay(target, upperdir, workdir string, lowerdirs []string) error {
 	var options strings.Builder
+	fmt.Fprintf(&options, "upperdir=%s,workdir=%s,", upperdir, workdir)
 	options.WriteString("lowerdir=")
 	for i, dir := range lowerdirs {
 		if i > 0 {
@@ -85,13 +89,23 @@ var earlyMounts = mountTable{
 	{"proc", "/proc", "proc", "", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV, true},
 	{"devtmpfs", "/dev", "devtmpfs", "mode=0755", unix.MS_NOSUID | unix.MS_STRICTATIME, true},
 	{"securityfs", "/sys/kernel/security", "securityfs", "", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV, false},
-	{"tmpfs", "/dev/shm", "tmpfs", "mode=01777", unix.MS_NOSUID | unix.MS_NODEV | unix.MS_STRICTATIME, true},
-	{"tmpfs", "/tmp", "tmpfs", "mode=01777", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV | unix.MS_STRICTATIME, true},
-	{"tmpfs", "/run", "tmpfs", "mode=01777", unix.MS_NOSUID | unix.MS_NODEV | unix.MS_STRICTATIME, true},
+	// We don't need tmpfs mounts since the root filesystem is already ephemeral.
+	// See prepareRoot().
+	// {"tmpfs", "/dev/shm", "tmpfs", "mode=01777", unix.MS_NOSUID | unix.MS_NODEV | unix.MS_STRICTATIME, true},
+	// {"tmpfs", "/tmp", "tmpfs", "mode=01777", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV | unix.MS_STRICTATIME, true},
+	// {"tmpfs", "/run", "tmpfs", "mode=01777", unix.MS_NOSUID | unix.MS_NODEV | unix.MS_STRICTATIME, true},
 	// {"cgroup2", "/sys/fs/cgroup", "cgroup2", "nsdelegate,memory_recursiveprot", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV, false},
 	{"bpf", "/sys/fs/bpf", "bpf", "mode=0700", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV, false},
 	{"debugfs", "/sys/kernel/debug", "debugfs", "", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV | unix.MS_RELATIME, false},
 	{"tracefs", "/sys/kernel/tracing", "tracefs", "", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV | unix.MS_RELATIME, false},
+}
+
+// Directories from the host root filesystem which should not be accessible in
+// the VM. They are replaced with an empty directory.
+var opaqueDirectories = []string{
+	"/dev/shm",
+	"/tmp",
+	"/run",
 }
 
 // From man 2 statfs.
@@ -206,11 +220,16 @@ func minimalInit(sys syscaller, args []string) error {
 		}
 
 		for tag, path := range cmd.MountTags {
+			path = filepath.Clean(path)
 			fmt.Println("Mounting", path)
 
-			if fs, ok := earlyMounts.pathIsBelowMount(path); ok && fs == "tmpfs" {
-				if err := os.MkdirAll(path, 0755); err != nil {
-					return fmt.Errorf("mount %q: %w", path, err)
+			for _, opaque := range opaqueDirectories {
+				if strings.HasPrefix(path, opaque) {
+					if err := os.MkdirAll(path, 0755); err != nil {
+						return fmt.Errorf("mount %q: %w", path, err)
+					}
+
+					break
 				}
 			}
 
@@ -314,6 +333,8 @@ func prepareRoot() error {
 	const (
 		hostDir    = "/host"
 		overlayDir = "/overlay"
+		upperDir   = "/upper"
+		workDir    = "/work"
 		mergedDir  = "/merged"
 	)
 
@@ -328,13 +349,15 @@ func prepareRoot() error {
 
 	// Mount a tmpfs so that we can create files, etc. Doesn't have to be on
 	// /tmp, but why not?
+	// Limit its size to 25% of total RAM to avoid triggering oomkills, instead
+	// turning them into ENOSPC or similar.
 	// TODO: flags?
-	if err := mount("tmpfs", "/tmp", "tmpfs", 0, ""); err != nil {
+	if err := mount("tmpfs", "/tmp", "tmpfs", 0, "size=25%"); err != nil {
 		return err
 	}
 
 	// Create mountpoints in our own tmpfs.
-	for _, dir := range []string{hostDir, overlayDir, mergedDir} {
+	for _, dir := range []string{hostDir, overlayDir, upperDir, workDir, mergedDir} {
 		if err := os.Mkdir(filepath.Join("/tmp", dir), 0755); err != nil {
 			return err
 		}
@@ -349,31 +372,54 @@ func prepareRoot() error {
 	//    /         tmpfs
 	//    /host     9pfs
 
-	root := hostDir
+	// Remove access to some temporary directories on the host root fs.
+	//
+	// See https://docs.kernel.org/filesystems/overlayfs.html#whiteouts-and-opaque-directories
+	for _, opaque := range opaqueDirectories {
+		path := filepath.Join(upperDir, opaque)
+		if err := os.MkdirAll(path, 0755); err != nil {
+			return fmt.Errorf("make directory opaque: %w", err)
+		}
+
+		if err := unix.Setxattr(path, "trusted.overlay.opaque", []byte("y"), 0); err != nil {
+			return fmt.Errorf("set opaque xattr: %w", err)
+		}
+	}
+
+	// Constituent parts of the merged filesystem.
+	//
+	// Directories with lower indices take precedence.
+	var lowerDirs []string
+
+	// Optionally mount an overlay for the root filesystem.
 	err := mount(p9OverlayTag, overlayDir, "9p", unix.MS_RDONLY, default9POptions)
-	if errors.Is(err, unix.ENOENT) {
+	if err != nil {
+		if !errors.Is(err, unix.ENOENT) {
+			return fmt.Errorf("mount overlay: %w", err)
+		}
+
 		fmt.Fprintln(os.Stderr, "Not mounting overlay:", err)
-	} else if err != nil {
-		return fmt.Errorf("mount overlay: %w", err)
 	} else {
+		lowerDirs = append(lowerDirs, overlayDir)
+
 		if err := checkHostShadowing(hostDir, overlayDir); err != nil {
 			return err
 		}
-
-		if err := mountOverlay(mergedDir, overlayDir, hostDir); err != nil {
-			return fmt.Errorf("mount root overlay: %w", err)
-		}
-
-		// The mount table is now:
-		//    /        tmpfs
-		//    /host    9pfs
-		//    /overlay 9pfs
-		//    /merged  overlayfs
-
-		root = mergedDir
 	}
 
-	if err := os.Chdir(root); err != nil {
+	// Mount the overlayfs which we'll use as the root.
+	lowerDirs = append(lowerDirs, hostDir)
+	if err := mountOverlay(mergedDir, upperDir, workDir, lowerDirs); err != nil {
+		return fmt.Errorf("mount root overlay: %w", err)
+	}
+
+	// The mount table is now:
+	//    /        tmpfs
+	//    /host    9pfs
+	//    /overlay 9pfs
+	//    /merged  overlayfs
+
+	if err := os.Chdir(mergedDir); err != nil {
 		return err
 	}
 
@@ -383,9 +429,8 @@ func prepareRoot() error {
 	}
 
 	// The mount table is now:
-	//    /        overlayfs or 9pfs
+	//    /        overlayfs
 	//    /host    9pfs              (shadowed by /)
-	//    /overlay 9pfs              (shadowed by /) (optional)
 
 	if err := unix.Chroot("."); err != nil {
 		return fmt.Errorf("chroot: %w", err)
