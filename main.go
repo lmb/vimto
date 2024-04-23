@@ -172,19 +172,28 @@ func execCmd(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
+	// Ensure that the repository root is available in the VM.
+	var sharedDirectories []string
+	if repo, err := findGitRoot("."); err != nil {
+		return err
+	} else if repo != "" {
+		sharedDirectories = append(sharedDirectories, repo)
+	}
+
 	cmd := &command{
-		Kernel:      vmlinuz,
-		Memory:      cfg.Memory,
-		SMP:         cfg.SMP,
-		Path:        fs.Arg(0),
-		Args:        fs.Args(),
-		User:        cfg.User,
-		Stdin:       os.Stdin,
-		Stdout:      os.Stdout,
-		Stderr:      os.Stderr,
-		RootOverlay: rootOverlay,
-		Setup:       cfg.Setup,
-		Teardown:    cfg.Teardown,
+		Kernel:            vmlinuz,
+		Memory:            cfg.Memory,
+		SMP:               cfg.SMP,
+		Path:              fs.Arg(0),
+		Args:              fs.Args(),
+		User:              cfg.User,
+		Stdin:             os.Stdin,
+		Stdout:            os.Stdout,
+		Stderr:            os.Stderr,
+		RootOverlay:       rootOverlay,
+		Setup:             cfg.Setup,
+		Teardown:          cfg.Teardown,
+		SharedDirectories: sharedDirectories,
 	}
 
 	if err := cmd.Start(ctx); err != nil {
