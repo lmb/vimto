@@ -5,12 +5,16 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	docker "github.com/docker/docker/client"
+	"github.com/kballard/go-shellquote"
 	"golang.org/x/sys/unix"
 )
 
@@ -37,20 +41,25 @@ func main() {
 	os.Exit(128)
 }
 
-func run(args []string) error {
-	if len(args) > 0 && filepath.IsAbs(args[0]) && unix.Access(args[0], unix.X_OK) == nil {
-		// This is an invocation via go test -exec. Patch up the command line.
-		execFs := configFlags("exec", nil)
-		args = append([]string{"exec"}, sortArgs(execFs, args)...)
-	}
+var usage = `
+Usage: %s [flags] [command] [--] ...
 
-	fs := flag.NewFlagSet("vimto", flag.ContinueOnError)
+Available commands:
+	exec        Execute a command inside a VM
+
+Flags:
+`
+
+func run(args []string) error {
+	cfg := *defaultConfig
+	fs := configFlags("vimto", &cfg)
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: %s [command] ...\n", fs.Name())
-		fmt.Fprintln(fs.Output())
-		fmt.Fprintln(fs.Output(), "Available commands:")
-		fmt.Fprintln(fs.Output(), "\texec    Execute a command inside a VM")
-		fmt.Fprintln(fs.Output())
+		o := fs.Output()
+		fmt.Fprintf(o, strings.TrimSpace(usage), fs.Name())
+		fs.PrintDefaults()
+	}
+	if err := parseConfigFromTOML(".", &cfg); err != nil {
+		return fmt.Errorf("read config: %w", err)
 	}
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -61,9 +70,21 @@ func run(args []string) error {
 	}
 
 	var err error
-	switch fs.Arg(0) {
-	case "exec":
-		err = execCmd(fs.Args()[1:])
+	switch cmd := fs.Arg(0); {
+	case cmd == "exec":
+		err = execCmd(&cfg, fs.Args()[1:])
+
+	case strings.HasPrefix(cmd, "go"):
+		// This is an invocation of go test, possibly via a pre-relase binary
+		// like go1.21rc2.
+		var flags []string
+		flags, err = splitFlagsFromArgs(args)
+		if err != nil {
+			return err
+		}
+
+		err = goTestCmd(&cfg, flags, cmd, fs.Args()[1:])
+
 	default:
 		fs.Usage()
 		return fmt.Errorf("unknown command %q", fs.Arg(0))
@@ -76,17 +97,56 @@ func run(args []string) error {
 	return nil
 }
 
-func execCmd(args []string) error {
-	cfg := *defaultConfig
-	fs := configFlags("exec", &cfg)
+// goTestCmd executes a go test command inside a VM.
+func goTestCmd(cfg *config, flags []string, goBinary string, goArgs []string) error {
+	if len(goArgs) < 1 || goArgs[0] != "test" {
+		return fmt.Errorf("first argument to go binary must be 'test'")
+	}
+
+	for _, arg := range goArgs {
+		if strings.HasPrefix(arg, "-exec") {
+			return fmt.Errorf("specifying -exec on the go command line is not supported")
+		}
+	}
+
+	exe, err := findExecutable()
+	if err != nil {
+		return err
+	}
+
+	// Prime the cache before invoking the go binary.
+	_, _, cleanup, err := findKernel(cfg.Kernel)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	execArgs := []string{exe}
+	// Retain command line arguments
+	// TODO: Make -kernel parameter absolute?
+	execArgs = append(execArgs, flags...)
+	// Execute exec command and ignore all test flags.
+	execArgs = append(execArgs, "exec", "--")
+
+	goArgs = slices.Insert(goArgs, 1, "-exec", shellquote.Join(execArgs...))
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, goBinary, goArgs...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func execCmd(cfg *config, args []string) error {
+	fs := flag.NewFlagSet("exec", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: %s [flags] [--] </path/to/binary> [flags of binary]\n", fs.Name())
+		fmt.Fprintf(fs.Output(), "Usage: %s [--] </path/to/binary> [flags of binary]\n", fs.Name())
 		fmt.Fprintln(fs.Output())
 		fs.PrintDefaults()
 		fmt.Fprintln(fs.Output())
-	}
-	if err := parseConfigFromTOML(".", &cfg); err != nil {
-		return fmt.Errorf("read config: %w", err)
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -98,50 +158,11 @@ func execCmd(args []string) error {
 		return fmt.Errorf("missing arguments")
 	}
 
-	if cfg.Kernel == "" {
-		return fmt.Errorf("specify a kernel via -vm.kernel")
+	vmlinuz, rootOverlay, cleanup, err := findKernel(cfg.Kernel)
+	if err != nil {
+		return err
 	}
-
-	var vmlinuz string
-	var rootOverlay string
-	if info, err := os.Stat(cfg.Kernel); errors.Is(err, os.ErrNotExist) {
-		// Assume that kernel is a reference to an image.
-		cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
-		if err != nil {
-			return fmt.Errorf("create docker client: %w", err)
-		}
-		defer cli.Close()
-
-		cache, err := newImageCache(cli)
-		if err != nil {
-			return fmt.Errorf("image cache: %w", err)
-		}
-
-		oi, err := cache.Acquire(context.Background(), cfg.Kernel)
-		if err != nil {
-			return fmt.Errorf("retrieve kernel from OCI image: %w", err)
-		}
-		defer oi.Release()
-
-		rootOverlay = oi.Directory
-		vmlinuz = filepath.Join(oi.Directory, imageKernelPath)
-	} else if err == nil {
-		if info.IsDir() {
-			// Kernel is path to an extracted image on disk.
-			rootOverlay = cfg.Kernel
-			vmlinuz = filepath.Join(rootOverlay, imageKernelPath)
-		} else {
-			// Kernel is a file on disk.
-			vmlinuz = cfg.Kernel
-		}
-	} else {
-		// Unexpected error from stat, maybe not allowed to access it?
-		return fmt.Errorf("kernel: %w", err)
-	}
-
-	if _, err := os.Stat(vmlinuz); err != nil {
-		return fmt.Errorf("invalid kernel: %w", err)
-	}
+	defer cleanup()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
@@ -181,6 +202,57 @@ func execCmd(args []string) error {
 	return nil
 }
 
+func findKernel(kernel string) (vmlinuz, overlay string, cleanup func() error, err error) {
+	closeOnError := func(c io.Closer) {
+		if err != nil {
+			c.Close()
+		}
+	}
+	cleanup = func() error { return nil }
+
+	if info, err := os.Stat(kernel); errors.Is(err, os.ErrNotExist) {
+		// Assume that kernel is a reference to an image.
+		cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+		if err != nil {
+			return "", "", nil, fmt.Errorf("create docker client: %w", err)
+		}
+		defer cli.Close()
+
+		cache, err := newImageCache(cli)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("image cache: %w", err)
+		}
+
+		oi, err := cache.Acquire(context.Background(), kernel)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("retrieve kernel from OCI image: %w", err)
+		}
+		defer closeOnError(oi)
+		cleanup = oi.Close
+
+		overlay = oi.Directory
+		vmlinuz = filepath.Join(oi.Directory, imageKernelPath)
+	} else if err == nil {
+		if info.IsDir() {
+			// Kernel is path to an extracted image on disk.
+			overlay = kernel
+			vmlinuz = filepath.Join(overlay, imageKernelPath)
+		} else {
+			// Kernel is a file on disk.
+			vmlinuz = kernel
+		}
+	} else {
+		// Unexpected error from stat, maybe not allowed to access it?
+		return "", "", nil, fmt.Errorf("kernel: %w", err)
+	}
+
+	if _, err := os.Stat(vmlinuz); err != nil {
+		return "", "", nil, fmt.Errorf("invalid kernel: %w", err)
+	}
+
+	return vmlinuz, overlay, cleanup, nil
+}
+
 func findExecutable() (string, error) {
 	// https://man7.org/linux/man-pages/man5/proc.5.html
 	buf := make([]byte, unix.NAME_MAX)
@@ -207,46 +279,15 @@ func findExecutable() (string, error) {
 	return path, nil
 }
 
-func sortArgs(fs *flag.FlagSet, args []string) []string {
-	type boolFlag interface {
-		IsBoolFlag() bool
-	}
-
-	testArgs := []string{args[0]}
+func splitFlagsFromArgs(args []string) ([]string, error) {
 	var flags []string
-	var nextArgIsValue bool
-	for _, arg := range args[1:] {
-		if nextArgIsValue {
-			flags = append(flags, arg)
-			nextArgIsValue = false
-			continue
-		}
-
-		if !strings.HasPrefix(arg, "-") {
-			// This is not a flag. Pretend it's an argument.
-			testArgs = append(testArgs, arg)
-			continue
-		}
-
-		name, _, found := strings.Cut(arg[1:], "=")
-		def := fs.Lookup(name)
-		if def == nil {
-			// Not a flag we recognise.
-			testArgs = append(testArgs, arg)
-			continue
+	for _, arg := range args {
+		if arg == "--" {
+			return flags, nil
 		}
 
 		flags = append(flags, arg)
-		if found {
-			// We have already appended the value via arg.
-			continue
-		} else if bf, ok := def.Value.(boolFlag); ok && bf.IsBoolFlag() {
-			// Boolean flags don't require a value.
-			continue
-		}
-
-		nextArgIsValue = true
 	}
 
-	return append(flags, testArgs...)
+	return nil, fmt.Errorf("missing '--' in arguments")
 }

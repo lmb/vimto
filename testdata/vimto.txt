@@ -7,7 +7,7 @@ vimto exec true
 ! stderr warning
 
 # Flag overrides config file.
-! vimto exec -vm.kernel ./bogus true
+! vimto -kernel ./bogus exec  true
 
 # Output is forwarded correctly.
 vimto exec sh -c 'echo testing'
@@ -18,18 +18,18 @@ stdout testing # we don't have separate stderr at the moment.
 
 # We can pass various command line arguments. Include flags which contain
 # their value separated with a '='.
-vimto exec -vm.smp 2 true
-vimto exec -vm.memory 96M true
+vimto -smp 2 exec true
+vimto -memory 96M exec true
 
 # Binaries are executed with the appropriate user.
 vimto exec -- id -u
 stdout ^${UID}$
 
-vimto exec -vm.sudo -- id -u
+vimto -sudo exec -- id -u
 stdout ^0$
 
 # vm.sudo doesn't accept arguments.
-! vimto exec -vm.sudo=false -- true
+! vimto -sudo=false exec -- true
 
 # Current working directory is preserved.
 vimto exec -- pwd
