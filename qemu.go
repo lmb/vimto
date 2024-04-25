@@ -148,7 +148,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	if !disableKVM {
 		devices = append(devices, qemu.ArbitraryArgs{"-enable-kvm"})
 	} else if cmd.Stderr != nil {
-		fmt.Fprintln(os.Stderr, "Warning: KVM disabled, performance will be limited.")
+		fmt.Fprintln(cmd.Stderr, "Warning: KVM disabled, performance will be limited.")
 	}
 
 	var binary string
@@ -302,7 +302,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		cmd.fakeStdin = fakeStdinHost
 	}
 
-	proc := exec.CommandContext(ctx, qemuArgs[0], qemuArgs[1:]...)
+	proc := commandWithGracefulTermination(ctx, qemuArgs[0], qemuArgs[1:]...)
 	proc.Stdin = stdin
 	proc.Stdout = cmd.Stdout
 	proc.Stderr = cmd.Stderr

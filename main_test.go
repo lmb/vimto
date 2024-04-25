@@ -8,13 +8,27 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	docker "github.com/docker/docker/client"
 	"github.com/go-quicktest/qt"
 	"rsc.io/script"
 	"rsc.io/script/scripttest"
 )
+
+func TestMain(m *testing.M) {
+	if os.Getpid() == 1 {
+		err := minimalInit(realSyscaller{}, os.Args[1:])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error from minimalInit:", err)
+			os.Exit(1)
+		}
+	}
+
+	os.Exit(m.Run())
+}
 
 func TestExecutable(t *testing.T) {
 	path := t.TempDir()
@@ -53,20 +67,42 @@ func TestExecutable(t *testing.T) {
 		}
 	}
 
+	image := mustFetchKernelImage(t)
+	env = append(env, "IMAGE="+image.Name)
+	env = append(env, "KERNEL="+image.Kernel())
+	env = append(env, fmt.Sprintf("UID=%d", os.Geteuid()))
+
+	scripttest.Test(t, context.Background(), e, env, "testdata/*.txt")
+}
+
+func kernelImage() string {
 	image := os.Getenv("CI_KERNEL")
 	if image == "" {
 		image = "ghcr.io/cilium/ci-kernels:stable"
 	}
+	return image
+}
 
-	cache, err := newImageCache(mustNewDockerClient(t))
-	qt.Assert(t, qt.IsNil(err))
-	img, err := cache.Acquire(context.Background(), image, io.Discard)
-	qt.Assert(t, qt.IsNil(err))
-	defer img.Close()
+var fetchKernelImage = sync.OnceValues(func() (*image, error) {
+	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
+	if err != nil {
+		return nil, err
+	}
+	defer cli.Close()
 
-	env = append(env, "IMAGE="+image)
-	env = append(env, "KERNEL="+filepath.Join(img.Directory, imageKernelPath))
-	env = append(env, fmt.Sprintf("UID=%d", os.Geteuid()))
+	cache, err := newImageCache(cli)
+	if err != nil {
+		return nil, err
+	}
 
-	scripttest.Test(t, context.Background(), e, env, "testdata/*.txt")
+	return cache.Acquire(context.Background(), kernelImage(), io.Discard)
+})
+
+// mustFetchKernelImage fetches a kernel image once for the entire lifetime
+// of the test binary.
+func mustFetchKernelImage(tb testing.TB) *image {
+	image, err := fetchKernelImage()
+	qt.Assert(tb, qt.IsNil(err))
+	// NB: Do not call image.Close()!
+	return image
 }
