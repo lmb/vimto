@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,7 +60,7 @@ func TestExecutable(t *testing.T) {
 
 	cache, err := newImageCache(mustNewDockerClient(t))
 	qt.Assert(t, qt.IsNil(err))
-	img, err := cache.Acquire(context.Background(), image)
+	img, err := cache.Acquire(context.Background(), image, io.Discard)
 	qt.Assert(t, qt.IsNil(err))
 	defer img.Close()
 

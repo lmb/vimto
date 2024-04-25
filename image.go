@@ -47,8 +47,8 @@ func newImageCache(cli *docker.Client) (*imageCache, error) {
 // Acquire an image from the cache.
 //
 // The image remains valid even after closing the cache.
-func (ic *imageCache) Acquire(ctx context.Context, img string) (_ *image, err error) {
-	refStr, digest, err := fetchImage(ctx, ic.cli, img)
+func (ic *imageCache) Acquire(ctx context.Context, img string, status io.Writer) (_ *image, err error) {
+	refStr, digest, err := fetchImage(ctx, ic.cli, img, status)
 	if err != nil {
 		return nil, fmt.Errorf("fetch image: %w", err)
 	}
@@ -134,7 +134,7 @@ func (img *image) Close() error {
 	return img.dir.Close()
 }
 
-func fetchImage(ctx context.Context, cli *docker.Client, refStr string) (string, string, error) {
+func fetchImage(ctx context.Context, cli *docker.Client, refStr string, status io.Writer) (string, string, error) {
 	if refStr, digest, err := imageID(ctx, cli, refStr); err == nil {
 		// Found a cached image, use that.
 		// TODO: We don't notice if the tag changes since we don't pull
@@ -148,6 +148,14 @@ func fetchImage(ctx context.Context, cli *docker.Client, refStr string) (string,
 	}
 	defer remotePullReader.Close()
 
+	isTTY := false
+	if f, ok := status.(*os.File); ok {
+		isTTY, err = fileIsTTY(f)
+		if err != nil {
+			return "", "", fmt.Errorf("check whether output is tty: %w", err)
+		}
+	}
+
 	decoder := json.NewDecoder(remotePullReader)
 	for {
 		var pullResponse jsonmessage.JSONMessage
@@ -157,7 +165,7 @@ func fetchImage(ctx context.Context, cli *docker.Client, refStr string) (string,
 			return "", "", err
 		}
 
-		if pullResponse.Error != nil {
+		if err := pullResponse.Display(status, isTTY); err != nil {
 			return "", "", fmt.Errorf("docker response: %w", pullResponse.Error)
 		}
 	}

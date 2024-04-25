@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -58,6 +59,16 @@ func fileIsDevZero(f *os.File) (bool, error) {
 	}
 
 	return fStat.Rdev == nullStat.Rdev, nil
+}
+
+func fileIsTTY(f *os.File) (bool, error) {
+	return fileControl(f, func(fd uintptr) (bool, error) {
+		_, err := unix.IoctlGetTermios(int(fd), unix.TCGETS)
+		if err != nil && !errors.Is(err, unix.ENOTTY) {
+			return false, err
+		}
+		return err == nil, nil
+	})
 }
 
 func fileControl[T any](f *os.File, fn func(fd uintptr) (T, error)) (T, error) {
