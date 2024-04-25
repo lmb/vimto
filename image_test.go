@@ -20,14 +20,14 @@ func TestCacheAcquire(t *testing.T) {
 
 	img1, err := cache.Acquire(context.Background(), "busybox")
 	qt.Assert(t, qt.IsNil(err))
-	defer img1.Release()
+	defer img1.Close()
 
 	start := time.Now()
 	img2, err := cache.Acquire(context.Background(), "busybox")
 	delta := time.Since(start)
 	qt.Assert(t, qt.IsTrue(delta < 100*time.Millisecond))
 	qt.Assert(t, qt.IsNil(err))
-	defer img2.Release()
+	defer img2.Close()
 
 	qt.Assert(t, qt.Equals(img2.Directory, img1.Directory))
 }

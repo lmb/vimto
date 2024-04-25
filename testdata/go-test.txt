@@ -1,22 +1,22 @@
 config kernel="${IMAGE}"
 
 # Exit status and stdout, stderr of tests is correctly forwarded.
-exec go test -exec vimto -run Success -v .
+vimto -- go test -run Success -v .
 stdout TestSuccess
 
-! exec go test -exec vimto -run Failure .
+! vimto -- go test -run Failure .
 stdout TestFailure
 
 # We can pass various command line arguments through the test runner.
-exec go test -exec vimto -run Success -vm.smp 2 .
-exec go test -exec vimto -run Success -vm.smp=2 .
+vimto -smp 2 -- go test -run Success  .
+vimto -smp=2 -- go test -run Success  .
 
 # Running a test with coverage enabled works.
-exec go test -exec vimto -run Success -coverprofile=cover.out .
+vimto -- go test -run Success -coverprofile=cover.out .
 exists cover.out
 
 # Running a test with race enabled works.
-exec go test -exec vimto -run Success -race .
+vimto -- go test -run Success -race .
 
 # TODO: -exec allows injecting arguments, which is not supported.
 # Add a test once we know what to do with this.

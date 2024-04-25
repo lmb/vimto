@@ -5,19 +5,22 @@
 `vimto` is a virtual machine testing orchestrator for the Go toolchain. It allows you to easily run Go unit tests using a specific Linux kernel.
 
 ```shell
-go test -exec vimto . -vm.kernel /path/to/vmlinuz
+# With .vimto.toml in place:
+vimto -- go test .
+# Otherwise:
+vimto -kernel /path/to/vmlinuz -- go test .
 ```
 
 It's possible to obtain the kernel from a container image (requires Docker).
 
 ```shell
-go test -exec vimto . -vm.kernel example.org/reg/image:tag
+vimto -kernel example.org/reg/image:tag -- go test .
 ```
 
 Finally, you can also use a path to a directory:
 
 ```shell
-go test -exec vimto . -vm.kernel ./path/to/dir
+vimto -kernel /path/to/dir -- go test .
 ```
 
 `vimto` expects the kernel to be at `/boot/vmlinuz` for containers and directories.

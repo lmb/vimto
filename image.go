@@ -44,6 +44,9 @@ func newImageCache(cli *docker.Client) (*imageCache, error) {
 	return &imageCache{cli, userCache}, nil
 }
 
+// Acquire an image from the cache.
+//
+// The image remains valid even after closing the cache.
 func (ic *imageCache) Acquire(ctx context.Context, img string) (_ *image, err error) {
 	refStr, digest, err := fetchImage(ctx, ic.cli, img)
 	if err != nil {
@@ -127,7 +130,7 @@ type image struct {
 	dir       *os.File
 }
 
-func (img *image) Release() error {
+func (img *image) Close() error {
 	return img.dir.Close()
 }
 

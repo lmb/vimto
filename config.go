@@ -79,7 +79,7 @@ func parseConfigFromTOML(dir string, cfg *config) error {
 
 func configFlags(name string, cfg *config) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.Func("vm.kernel", "`path or url` to the Linux image (use ':tag' to substitute tag in url)", func(s string) error {
+	fs.Func("kernel", "`path or url` to the Linux image (use ':tag' to substitute tag in url)", func(s string) error {
 		if !strings.HasPrefix(s, ":") {
 			cfg.Kernel = s
 			return nil
@@ -97,15 +97,15 @@ func configFlags(name string, cfg *config) *flag.FlagSet {
 		cfg.Kernel = fmt.Sprintf("%s:%s", image, tag)
 		return nil
 	})
-	fs.Func("vm.memory", "memory to give to the VM", func(s string) error {
+	fs.Func("memory", "memory to give to the VM", func(s string) error {
 		cfg.Memory = s
 		return nil
 	})
-	fs.Func("vm.smp", "", func(s string) error {
+	fs.Func("smp", "", func(s string) error {
 		cfg.SMP = s
 		return nil
 	})
-	fs.BoolFunc("vm.sudo", "execute as root", func(s string) error {
+	fs.BoolFunc("sudo", "execute as root", func(s string) error {
 		if s != "true" {
 			return errors.New("flag only accepts true")
 		}

@@ -95,11 +95,11 @@ func TestConfigFlags(t *testing.T) {
 	fs := configFlags("test", &cfg)
 	fs.SetOutput(io.Discard)
 
-	err := fs.Parse([]string{"-vm.kernel", ":foo"})
+	err := fs.Parse([]string{"-kernel", ":foo"})
 	qt.Assert(t, qt.IsNotNil(err))
 
 	cfg.Kernel = "example.org/image:bar"
-	err = fs.Parse([]string{"-vm.kernel", ":foo"})
+	err = fs.Parse([]string{"-kernel", ":foo"})
 	qt.Assert(t, qt.IsNil(err))
 	qt.Assert(t, qt.Equals(cfg.Kernel, "example.org/image:foo"))
 }
