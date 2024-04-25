@@ -223,7 +223,7 @@ func findKernel(kernel string) (vmlinuz, overlay string, cleanup func() error, e
 			return "", "", nil, fmt.Errorf("image cache: %w", err)
 		}
 
-		oi, err := cache.Acquire(context.Background(), kernel)
+		oi, err := cache.Acquire(context.Background(), kernel, os.Stdout)
 		if err != nil {
 			return "", "", nil, fmt.Errorf("retrieve kernel from OCI image: %w", err)
 		}

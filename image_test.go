@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -18,12 +19,12 @@ func TestCacheAcquire(t *testing.T) {
 	cli := mustNewDockerClient(t)
 	cache := imageCache{cli, t.TempDir()}
 
-	img1, err := cache.Acquire(context.Background(), "busybox")
+	img1, err := cache.Acquire(context.Background(), "busybox", io.Discard)
 	qt.Assert(t, qt.IsNil(err))
 	defer img1.Close()
 
 	start := time.Now()
-	img2, err := cache.Acquire(context.Background(), "busybox")
+	img2, err := cache.Acquire(context.Background(), "busybox", io.Discard)
 	delta := time.Since(start)
 	qt.Assert(t, qt.IsTrue(delta < 100*time.Millisecond))
 	qt.Assert(t, qt.IsNil(err))
@@ -38,7 +39,7 @@ func TestFetchAndExtractImage(t *testing.T) {
 
 	cli.ImageRemove(context.Background(), "busybox", types.ImageRemoveOptions{Force: true})
 
-	refStr, digest, err := fetchImage(context.Background(), cli, "busybox")
+	refStr, digest, err := fetchImage(context.Background(), cli, "busybox", io.Discard)
 	qt.Assert(t, qt.IsNil(err))
 
 	refStr2, digest2, err := imageID(context.Background(), cli, refStr)
@@ -116,7 +117,7 @@ func TestSecureJoin(t *testing.T) {
 
 func BenchmarkExtractImage(b *testing.B) {
 	cli := mustNewDockerClient(b)
-	refStr, _, err := fetchImage(context.Background(), cli, "busybox")
+	refStr, _, err := fetchImage(context.Background(), cli, "busybox", io.Discard)
 	qt.Assert(b, qt.IsNil(err))
 
 	b.ResetTimer()
