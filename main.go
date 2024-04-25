@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"slices"
@@ -133,7 +132,7 @@ func goTestCmd(cfg *config, flags []string, goBinary string, goArgs []string) er
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, goBinary, goArgs...)
+	cmd := commandWithGracefulTermination(ctx, goBinary, goArgs...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -156,6 +155,10 @@ func execCmd(cfg *config, args []string) error {
 	if fs.NArg() < 1 {
 		fs.Usage()
 		return fmt.Errorf("missing arguments")
+	}
+
+	if !staticBuild {
+		return errors.New("binary is not statically linked (did you build with CGO_ENABLED=0?)")
 	}
 
 	vmlinuz, rootOverlay, cleanup, err := findKernel(cfg.Kernel)
@@ -231,7 +234,7 @@ func findKernel(kernel string) (vmlinuz, overlay string, cleanup func() error, e
 		cleanup = oi.Close
 
 		overlay = oi.Directory
-		vmlinuz = filepath.Join(oi.Directory, imageKernelPath)
+		vmlinuz = oi.Kernel()
 	} else if err == nil {
 		if info.IsDir() {
 			// Kernel is path to an extracted image on disk.
@@ -271,11 +274,6 @@ func findExecutable() (string, error) {
 		return "", err
 	}
 
-	if !staticBuild {
-		return "", fmt.Errorf("executable %q is not statically linked", path)
-	}
-
-	// TODO: This should validate that the file is statically linked.
 	return path, nil
 }
 

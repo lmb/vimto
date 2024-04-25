@@ -60,7 +60,7 @@ func (ic *imageCache) Acquire(ctx context.Context, img string, status io.Writer)
 		return nil, err
 	}
 
-	return &image{path, lock}, nil
+	return &image{img, path, lock}, nil
 }
 
 func populateDirectoryOnce(path string, fn func(string) error) (lock *os.File, _ string, err error) {
@@ -126,12 +126,17 @@ func populateDirectoryOnce(path string, fn func(string) error) (lock *os.File, _
 }
 
 type image struct {
+	Name      string
 	Directory string
 	dir       *os.File
 }
 
 func (img *image) Close() error {
 	return img.dir.Close()
+}
+
+func (img *image) Kernel() string {
+	return filepath.Join(img.Directory, imageKernelPath)
 }
 
 func fetchImage(ctx context.Context, cli *docker.Client, refStr string, status io.Writer) (string, string, error) {
