@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
+	"time"
 
 	docker "github.com/docker/docker/client"
 	"github.com/kballard/go-shellquote"
@@ -196,6 +198,18 @@ func execCmd(cfg *config, args []string) error {
 
 	if err := cmd.Start(ctx); err != nil {
 		return err
+	}
+
+	if dur, err := time.ParseDuration(os.Getenv("COREDUMP_TIMEOUT")); err == nil {
+		go func() {
+			select {
+			case <-time.After(dur):
+				fmt.Fprintln(os.Stderr, "Timed out, sending SIGQUIT")
+				cmd.cmd.Process.Signal(syscall.SIGQUIT)
+			case <-ctx.Done():
+				return
+			}
+		}()
 	}
 
 	if err := cmd.Wait(); err != nil {
