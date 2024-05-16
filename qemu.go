@@ -13,17 +13,22 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"slices"
 	"strconv"
 	"time"
 
 	"github.com/u-root/u-root/pkg/qemu"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/sys/unix"
 )
 
 const p9OverlayTag = "overlay"
 
 const envDisableKVM = "VIMTO_DISABLE_KVM"
+
+type sysctl struct {
+	Name  string
+	Value string
+}
 
 // command is a binary to be executed under a different kernel.
 //
@@ -50,6 +55,12 @@ type command struct {
 	Stderr io.Writer
 	// A directory to overlay over the root filesystem.
 	RootOverlay string
+
+	// Sysctls set before the program is executed.
+	Sysctls []sysctl
+
+	// Resource limits.
+	Rlimits map[int]unix.Rlimit
 
 	// Commands to execute before and after Path is executed.
 	Setup, Teardown []configCommand
@@ -172,23 +183,8 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		virtioPorts.Chardevs[cds.addFdSet(fds.addFile(port))] = name
 	}
 
-	wd := cmd.Dir
-	if wd == "" {
-		wd, err = os.Getwd()
-		if err != nil {
-			return err
-		}
-	}
-
-	// Ensure that the binary and the working directory are always available
-	// in the guest.
-	sharedDirectories := slices.Clone(cmd.SharedDirectories)
-	sharedDirectories = append(sharedDirectories, filepath.Dir(cmd.Path), wd)
-	slices.Sort(sharedDirectories)
-	sharedDirectories = slices.Compact(sharedDirectories)
-
 	mountTags := make(map[string]string)
-	for i, dir := range sharedDirectories {
+	for i, dir := range cmd.SharedDirectories {
 		fstype, found := earlyMounts.pathIsBelowMount(dir)
 		if found && fstype != "tmpfs" {
 			return fmt.Errorf("directory %s is shadowed by %s mount in the guest", dir, fstype)
@@ -240,9 +236,11 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	execCmd := execCommand{
 		cmd.Path,
 		cmd.Args,
-		wd,
+		cmd.Dir,
 		uid, gid,
 		cmd.Env,
+		cmd.Sysctls,
+		cmd.Rlimits,
 		cmd.Setup, cmd.Teardown,
 		mountTags,
 	}
@@ -387,6 +385,8 @@ type execCommand struct {
 	Dir             string
 	Uid, Gid        int
 	Env             []string
+	Sysctls         []sysctl
+	Rlimits         map[int]unix.Rlimit
 	Setup, Teardown []configCommand
 	MountTags       map[string]string // map[tag]path
 }

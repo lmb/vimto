@@ -42,6 +42,7 @@ func TestExecutable(t *testing.T) {
 	t.Setenv("PATH", fmt.Sprintf("%s:%s", path, os.Getenv("PATH")))
 
 	e := script.NewEngine()
+	e.Cmds["glob-exists"] = globExists
 	e.Cmds["vimto"] = script.Program("vimto", nil, time.Second)
 	e.Cmds["config"] = script.Command(script.CmdUsage{
 		Summary: "Write to the configuration file",
@@ -106,3 +107,38 @@ func mustFetchKernelImage(tb testing.TB) *image {
 	// NB: Do not call image.Close()!
 	return image
 }
+
+var globExists = script.Command(
+	script.CmdUsage{
+		Summary: "check that files exist",
+		Args:    "pattern...",
+	},
+	func(s *script.State, patterns ...string) (script.WaitFunc, error) {
+		if len(patterns) == 0 {
+			return nil, script.ErrUsage
+		}
+
+		for _, pattern := range patterns {
+			files, err := filepath.Glob(s.Path(pattern))
+			if err != nil {
+				return nil, err
+			}
+
+			if len(files) == 0 {
+				return nil, fmt.Errorf("no file(s) matched pattern %q", pattern)
+			}
+
+			for _, file := range files {
+				file, err := filepath.Rel(s.Getwd(), file)
+				if err != nil {
+					return nil, err
+				}
+
+				s.Logf("pattern %q matched %v", pattern, file)
+			}
+
+		}
+
+		return nil, nil
+	},
+)
