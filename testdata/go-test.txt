@@ -18,12 +18,13 @@ exists cover.out
 # Running a test with race enabled works.
 vimto -- go test -run Success -race .
 
-# TODO: -exec allows injecting arguments, which is not supported.
-# Add a test once we know what to do with this.
-# exec go test -exec "vimto arg" -run Success .
+# The test binary is preserved if a test crashes with a coredump.
+env GOTRACEBACK=crash
+! vimto -- go test -run Panic .
+exists test.test
 
 # Building packages within the VM works.
-vimto exec go build -x .
+vimto exec go build .
 
 -- go.mod --
 
@@ -49,4 +50,8 @@ func TestSuccess(t *testing.T) {
 
 func TestFailure(t *testing.T) {
 	t.Error("Groop, I implore thee, my foonting turlingdromes")
+}
+
+func TestPanic(t *testing.T) {
+	panic("oh no!")
 }

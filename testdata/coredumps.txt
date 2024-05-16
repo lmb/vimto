@@ -1,0 +1,10 @@
+config kernel="${IMAGE}"
+
+# Ensure that ulimit inside the VM is raised.
+vimto exec -- sh -c 'ulimit -c'
+stdout unlimited
+
+# Trigger a core dump inside the VM.
+! vimto exec -- timeout -s QUIT 0.1s sleep 10
+stdout 'dumped core'
+glob-exists core-*

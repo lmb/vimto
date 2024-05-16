@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"flag"
 	"fmt"
@@ -178,31 +179,59 @@ func execCmd(cfg *config, args []string) error {
 		sharedDirectories = append(sharedDirectories, repo)
 	}
 
+	// Ensure that the binary is available in the VM.
+	path := flag.Arg(0)
+	sharedDirectories = append(sharedDirectories, filepath.Dir(path))
+
+	// Ensure that the working directory is available.
+	wd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	sharedDirectories = append(sharedDirectories, wd)
+
+	tmp := make([]byte, 2)
+	rand.Read(tmp)
+	corePrefix := fmt.Sprintf("core-%x-", tmp)
+
 	cmd := &command{
-		Kernel:            vmlinuz,
-		Memory:            cfg.Memory,
-		SMP:               cfg.SMP,
-		Path:              fs.Arg(0),
-		Args:              fs.Args(),
-		User:              cfg.User,
-		Stdin:             os.Stdin,
-		Stdout:            os.Stdout,
-		Stderr:            os.Stderr,
-		RootOverlay:       rootOverlay,
+		Kernel:      vmlinuz,
+		Memory:      cfg.Memory,
+		SMP:         cfg.SMP,
+		Path:        fs.Arg(0),
+		Args:        fs.Args(),
+		Dir:         wd,
+		User:        cfg.User,
+		Stdin:       os.Stdin,
+		Stdout:      os.Stdout,
+		Stderr:      os.Stderr,
+		RootOverlay: rootOverlay,
+		Sysctls: []sysctl{
+			{"kernel.core_pattern", filepath.Join(wd, corePrefix+"%e.%p.%t")},
+		},
+		Rlimits: map[int]unix.Rlimit{
+			unix.RLIMIT_CORE: {Cur: unix.RLIM_INFINITY, Max: unix.RLIM_INFINITY},
+		},
 		Setup:             cfg.Setup,
 		Teardown:          cfg.Teardown,
-		SharedDirectories: sharedDirectories,
+		SharedDirectories: slices.Compact(sharedDirectories),
 	}
 
 	if err := cmd.Start(ctx); err != nil {
 		return err
 	}
 
-	if err := cmd.Wait(); err != nil {
+	waitErr := cmd.Wait()
+	if waitErr == nil {
+		return nil
+	}
+
+	// Something went wrong, try to retain the go test binary if appropriate.
+	if err := preserveTestBinary(cmd.Path, wd, corePrefix); err != nil {
 		return err
 	}
 
-	return nil
+	return waitErr
 }
 
 func findKernel(kernel string) (vmlinuz, overlay string, cleanup func() error, err error) {
@@ -288,4 +317,31 @@ func splitFlagsFromArgs(args []string) ([]string, error) {
 	}
 
 	return nil, fmt.Errorf("missing '--' in arguments")
+}
+
+func preserveTestBinary(path, wd, corePrefix string) error {
+	if isGoTest := strings.HasPrefix(path, os.TempDir()); !isGoTest {
+		return nil
+	}
+
+	if files, err := filepath.Glob(filepath.Join(wd, corePrefix+"*")); err != nil {
+		return err
+	} else if len(files) == 0 {
+		return nil
+	}
+
+	src, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	dst, err := os.OpenFile(filepath.Join(wd, filepath.Base(path)), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+
+	_, err = io.Copy(dst, src)
+	return err
 }

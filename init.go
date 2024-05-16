@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -256,12 +257,28 @@ func minimalInit(sys syscaller, args []string) error {
 			}
 		}
 
+		// Apply sysctls.
+		for _, sysctl := range cmd.Sysctls {
+			err = writeSysctl(sysctl.Name, sysctl.Value)
+			if err != nil {
+				return fmt.Errorf("set sysctl %s: %w", sysctl.Name, err)
+			}
+		}
+
 		if err := executeSimpleCommands([]configCommand{{"ip", "link", "set", "dev", "lo", "up"}}, cmd.Dir, cmd.Env); err != nil {
 			fmt.Fprintln(os.Stderr, "Set up lo:", err)
 		}
 
 		if err := executeSimpleCommands(cmd.Setup, cmd.Dir, cmd.Env); err != nil {
 			return fmt.Errorf("setup: %w", err)
+		}
+
+		// Set resource limits
+		for resource, limit := range cmd.Rlimits {
+			err = unix.Setrlimit(resource, &limit)
+			if err != nil {
+				return fmt.Errorf("raise resource limit 0x%x: %w", resource, err)
+			}
 		}
 
 		proc := exec.Command(cmd.Path)
@@ -527,4 +544,18 @@ func read9PMountTags() ([]string, error) {
 	}
 
 	return tags, nil
+}
+
+func writeSysctl(name, value string) error {
+	path := filepath.Join("/proc/sys", strings.ReplaceAll(name, ".", string(filepath.Separator)))
+	// No O_CREAT, so that we don't create non-existent sysctls.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	_, err = io.WriteString(f, value)
+	if err1 := f.Close(); err1 != nil && err == nil {
+		err = err1
+	}
+	return err
 }
