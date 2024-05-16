@@ -11,6 +11,8 @@ vimto -- go test .
 vimto -kernel /path/to/vmlinuz -- go test .
 ```
 
+The tests are executed inside an ephemeral VM, with an [execution environment](docs/environment.md) which mimics the host.
+
 It's possible to obtain the kernel from a container image (requires Docker).
 
 ```shell
@@ -24,7 +26,7 @@ vimto -kernel /path/to/dir -- go test .
 ```
 
 `vimto` expects the kernel to be at `/boot/vmlinuz` for containers and directories.
-See also [Container format](#container-format).
+See also [Container format](docs/container.md).
 
 ## Installation
 
@@ -40,30 +42,6 @@ CGO_ENABLED=0 go install lmb.io/vimto@latest
 
 All available options and their values are in [testdata/default.toml](./testdata/default.toml).
 
-## Container format
-
-The container (or directory) must contain a file `/boot/vmlinuz` which is used to boot the VM.
-
-Other files and directories in the container are merged with the host filesystem
-using an overlayfs mount inside the VM.
-
-### Error: directory /lib: shadows symlink on host
-
-This error is generated if the image contains a directory that would shadow
-important directories in the host:
-
-* /lib
-* /lib64
-* /bin
-* /sbin
-
-This happens when running on distributions that have completed a /usr merge. In
-this case these directories are symlinks on the host. Overlaying a directory from
-the image will make the symlink disappear.
-
-To work around the issue, place files in `/usr/lib`, ... and include your own
-`/lib -> /usr/lib` symlink in the image.
-
 ## Currently not supported
 
 * Networking
@@ -71,8 +49,10 @@ To work around the issue, place files in `/usr/lib`, ... and include your own
 
 ## Requirements
 
+* An `amd64` or `arm64` host
 * A recent version of `qemu` (8.1.3 is known to work)
 * A Linux kernel with the necessary configuration (>= 4.9 is known to work)
+* KVM (optional, see [VIMTO_DISABLE_KVM](docs/tips.md))
 * Docker (optional, to fetch kernels from OCI registries)
 
 Here is a non-exhaustive list of required Linux options:
