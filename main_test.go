@@ -43,6 +43,19 @@ func TestExecutable(t *testing.T) {
 
 	e := script.NewEngine()
 	e.Cmds["glob-exists"] = globExists
+	e.Cmds["new-tmp"] = script.Command(script.CmdUsage{
+		Summary: "use a distinct temp directory",
+		Detail: []string{
+			"Create a new TMPDIR which is not a subdirectory of WORK.",
+		},
+	}, func(s *script.State, args ...string) (script.WaitFunc, error) {
+		if len(args) != 0 {
+			return nil, script.ErrUsage
+		}
+
+		s.Setenv("TMPDIR", t.TempDir())
+		return nil, nil
+	})
 	e.Cmds["vimto"] = script.Program("vimto", nil, time.Second)
 	e.Cmds["config"] = script.Command(script.CmdUsage{
 		Summary: "Write to the configuration file",

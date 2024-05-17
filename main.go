@@ -180,7 +180,7 @@ func execCmd(cfg *config, args []string) error {
 	}
 
 	// Ensure that the binary is available in the VM.
-	path := flag.Arg(0)
+	path := fs.Arg(0)
 	sharedDirectories = append(sharedDirectories, filepath.Dir(path))
 
 	// Ensure that the working directory is available.
@@ -198,7 +198,7 @@ func execCmd(cfg *config, args []string) error {
 		Kernel:      vmlinuz,
 		Memory:      cfg.Memory,
 		SMP:         cfg.SMP,
-		Path:        fs.Arg(0),
+		Path:        path,
 		Args:        fs.Args(),
 		Dir:         wd,
 		User:        cfg.User,
