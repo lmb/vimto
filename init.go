@@ -298,11 +298,11 @@ func minimalInit(sys syscaller, args []string) error {
 			},
 		}
 
-		if err := unix.Access(proc.Path, unix.R_OK); err != nil {
+		if err := unix.Access(proc.Path, unix.R_OK); err == unix.EACCES {
 			// QEMU limitation: the 9p implementation needs to be able to read the
 			// executable to be able to execute it in the VM.
 			// TODO: Might be able to avoid this using CAP_DAC_OVERRIDE or similar.
-			fmt.Fprintf(stdio, "%s is not readable, execution might fail with %q\n", cmd.Path, unix.EACCES)
+			fmt.Fprintf(stdio, "%s is not readable, execution might fail with %q\n", cmd.Path, err)
 		}
 
 		result := proc.Run()
