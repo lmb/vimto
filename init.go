@@ -247,9 +247,11 @@ func minimalInit(sys syscaller, args []string) error {
 			}
 		}
 
+		// Setup environment variables.
 		for _, env := range cmd.Env {
-			if strings.HasPrefix(env, "PATH=") {
-				err := os.Setenv("PATH", strings.TrimPrefix(env, "PATH="))
+			key, value, _ := strings.Cut(env, "=")
+			if key == "PATH" {
+				err := os.Setenv("PATH", value)
 				if err != nil {
 					return err
 				}
@@ -455,6 +457,10 @@ func prepareRoot() error {
 
 	if err := unix.Chdir("/"); err != nil {
 		return fmt.Errorf("chdir: %w", err)
+	}
+
+	if err := unix.Chmod("/tmp", 01777); err != nil {
+		return fmt.Errorf("chmod /tmp: %w", err)
 	}
 
 	return nil

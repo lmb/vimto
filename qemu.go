@@ -13,7 +13,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/u-root/u-root/pkg/qemu"
@@ -233,21 +235,27 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		}
 	}
 
+	// Sanitize environment
+	env := slices.Clone(cmd.Env)
+	if env == nil {
+		env = os.Environ()
+	}
+
+	env = slices.DeleteFunc(env, func(env string) bool {
+		// Don't allow overriding TMPDIR from outside the VM.
+		return strings.HasPrefix(env, "TMPDIR=")
+	})
+
 	execCmd := execCommand{
 		cmd.Path,
 		cmd.Args,
 		cmd.Dir,
 		uid, gid,
-		cmd.Env,
+		env,
 		cmd.Sysctls,
 		cmd.Rlimits,
 		cmd.Setup, cmd.Teardown,
 		mountTags,
-	}
-
-	if execCmd.Env == nil {
-		// TODO: Might have to do some filtering here.
-		execCmd.Env = os.Environ()
 	}
 
 	init, err := findExecutable()
