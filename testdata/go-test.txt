@@ -1,4 +1,5 @@
 config kernel="${IMAGE}"
+new-tmp
 
 # Exit status and stdout, stderr of tests is correctly forwarded.
 vimto -- go test -run Success -v .
