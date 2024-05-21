@@ -3,7 +3,9 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"runtime"
 	"syscall"
 
@@ -26,6 +28,58 @@ func flock(f *os.File, how int) error {
 		return struct{}{}, unix.Flock(int(fd), how)
 	})
 	return err
+}
+
+// createLockedDirectory atomically creates a directory at path.
+//
+// Returns a file descriptor for path, locked in LOCK_EX mode.
+func createLockedDirectory(path string, perm fs.FileMode) (*os.File, error) {
+	tmpdir, err := os.MkdirTemp(filepath.Dir(path), "")
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(tmpdir)
+
+	if err := os.Chmod(tmpdir, perm); err != nil {
+		return nil, err
+	}
+
+	dir, err := os.Open(tmpdir)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := flock(dir, unix.LOCK_EX); err != nil {
+		dir.Close()
+		return nil, fmt.Errorf("lock %q: %w", dir.Name(), err)
+	}
+
+	if err := unix.Renameat2(unix.AT_FDCWD, tmpdir, unix.AT_FDCWD, path, unix.RENAME_NOREPLACE); err != nil {
+		dir.Close()
+		return nil, fmt.Errorf("atomic rename: %w", err)
+	}
+
+	return dir, nil
+}
+
+// removeAllLocked removes a (possible locked) directory and its contents.
+//
+// Returns nil if path doesn't exist, like [os.RemoveAll].
+func removeAllLocked(path string) error {
+	dir, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		// Directory doesn't exist, nothing to do.
+		return nil
+	} else if err != nil {
+		return err
+	}
+	defer dir.Close()
+
+	if err := flock(dir, unix.LOCK_EX); err != nil {
+		return err
+	}
+
+	return os.RemoveAll(path)
 }
 
 func unixSocketpair() (*os.File, *os.File, error) {

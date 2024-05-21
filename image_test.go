@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -57,14 +56,14 @@ func TestFetchAndExtractImage(t *testing.T) {
 }
 
 func TestPopulateDirectoryOnce(t *testing.T) {
-	tmp := t.TempDir()
+	tmp := filepath.Join(t.TempDir(), "test")
 
-	waiting := make(chan struct{})
+	running := make(chan struct{}, 1)
 	quit := make(chan struct{})
 	errs := make(chan error, 2)
 	go func() {
-		f, _, err := populateDirectoryOnce(tmp, func(s string) error {
-			close(waiting)
+		f, err := populateDirectoryOnce(tmp, func(s string) error {
+			running <- struct{}{}
 			<-quit
 			return nil
 		})
@@ -75,13 +74,14 @@ func TestPopulateDirectoryOnce(t *testing.T) {
 	}()
 
 	select {
-	case <-waiting:
+	case <-running:
 	case err := <-errs:
 		t.Fatal("Got error from first invoke:", err)
 	}
 
 	go func() {
-		f, _, err := populateDirectoryOnce(tmp, func(s string) error {
+		running <- struct{}{}
+		f, err := populateDirectoryOnce(tmp, func(s string) error {
 			return errors.New("invoked second fn")
 		})
 		if err == nil {
@@ -90,7 +90,12 @@ func TestPopulateDirectoryOnce(t *testing.T) {
 		errs <- err
 	}()
 
-	runtime.Gosched()
+	select {
+	case <-running:
+	case err := <-errs:
+		t.Fatal("Got error:", err)
+	}
+
 	close(quit)
 
 	qt.Assert(t, qt.IsNil(<-errs))

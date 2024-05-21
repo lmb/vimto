@@ -53,82 +53,79 @@ func (ic *imageCache) Acquire(ctx context.Context, img string, status io.Writer)
 		return nil, fmt.Errorf("fetch image: %w", err)
 	}
 
-	lock, path, err := populateDirectoryOnce(filepath.Join(ic.baseDir, digest), func(path string) error {
+	dir, err := populateDirectoryOnce(filepath.Join(ic.baseDir, digest), func(path string) error {
 		return extractImage(ctx, ic.cli, refStr, path)
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	return &image{img, path, lock}, nil
+	return newImage(img, dir)
 }
 
-func populateDirectoryOnce(path string, fn func(string) error) (lock *os.File, _ string, err error) {
-	closeOnError := func(c io.Closer) {
-		if err != nil {
-			c.Close()
+// populateDirectoryOnce creates path by executing fn once across multiple
+// processes.
+//
+// Returns a file descriptor for path.
+func populateDirectoryOnce(path string, fn func(tmpDir string) error) (*os.File, error) {
+	tmpPath := path + "-tmp"
+	for {
+		// (1) Happy path: the directory exists. Pairs with (4).
+		dir, err := os.Open(path)
+		if err == nil {
+			return dir, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
 		}
-	}
 
-	if err := os.Mkdir(path, 0755); err != nil && !errors.Is(err, os.ErrExist) {
-		return nil, "", fmt.Errorf("create cache directory: %w", err)
-	}
+		// Unhappy path, the directory doesn't exist.
+		dir, err = createLockedDirectory(tmpPath, 0755)
+		if errors.Is(err, os.ErrExist) {
+			// (2) Something else managed to grab the lock, wait for it to finish.
+			// Also removes any corrupt temporary state. Pairs with (3), (5).
+			if err := removeAllLocked(tmpPath); err != nil {
+				return nil, err
+			}
 
-	dir, err := os.Open(path)
-	if err != nil {
-		return nil, "", err
-	}
-	defer closeOnError(dir)
-
-	if err := flock(dir, unix.LOCK_SH); err != nil {
-		return nil, "", fmt.Errorf("lock %q: %w", dir.Name(), err)
-	}
-
-	contents := filepath.Join(dir.Name(), "contents")
-	if _, err := os.Stat(contents); err == nil {
-		// We have a cached copy of the image.
-		return dir, contents, nil
-	}
-
-	// Need to extract the image, acquire exclusive lock.
-	if err := flock(dir, unix.LOCK_EX); err != nil {
-		return nil, "", fmt.Errorf("lock %q: %w", dir.Name(), err)
-	}
-
-	// Changing lock mode is not atomic, revalidate.
-	if _, err := os.Stat(contents); err == nil {
-		if err := flock(dir, unix.LOCK_SH); err != nil {
-			return nil, "", fmt.Errorf("lock %q: %w", dir.Name(), err)
+			// Check whether the directory exists now.
+			continue
+		} else if err != nil {
+			return nil, err
 		}
-		return dir, contents, nil
-	}
+		// (3) Always close on error to release the exclusive lock. Pairs with (2).
+		defer dir.Close()
 
-	tmpdir, err := os.MkdirTemp(path, "")
-	if err != nil {
-		return nil, "", err
-	}
-	defer os.RemoveAll(tmpdir)
+		if err := fn(tmpPath); err != nil {
+			return nil, fmt.Errorf("populate directory: %w", err)
+		}
 
-	if err := fn(tmpdir); err != nil {
-		return nil, "", fmt.Errorf("populate %s: %w", contents, err)
-	}
+		// (4) Commit the directory. Pairs with (1).
+		if err := unix.Renameat2(unix.AT_FDCWD, tmpPath, unix.AT_FDCWD, path, unix.RENAME_NOREPLACE); err != nil {
+			return nil, fmt.Errorf("commit directory: %w", err)
+		}
 
-	if err := os.Rename(tmpdir, contents); err != nil {
-		return nil, "", err
-	}
+		// (5) Release the exclusive lock, pairs with (2).
+		if err := dir.Close(); err != nil {
+			return nil, err
+		}
 
-	// Drop the exclusive lock.
-	if err := flock(dir, unix.LOCK_SH); err != nil {
-		return nil, "", fmt.Errorf("drop exclusive lock: %w", err)
+		// Use the created directory.
+		return os.Open(path)
 	}
-
-	return dir, contents, nil
 }
 
 type image struct {
 	Name      string
 	Directory string
 	dir       *os.File
+}
+
+func newImage(name string, dir *os.File) (*image, error) {
+	// Lock the directory for good measure (not required for cache consistency).
+	if err := flock(dir, unix.LOCK_SH); err != nil {
+		return nil, err
+	}
+	return &image{Name: name, Directory: dir.Name(), dir: dir}, nil
 }
 
 func (img *image) Close() error {

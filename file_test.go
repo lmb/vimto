@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/creack/pty/v2"
@@ -40,6 +41,24 @@ func TestFlock(t *testing.T) {
 
 	f1.Close()
 	qt.Assert(t, qt.IsNil(flock(f2, unix.LOCK_EX|unix.LOCK_NB)))
+}
+
+func TestCreateLockedDirectory(t *testing.T) {
+	tmpdir := t.TempDir()
+	path := filepath.Join(tmpdir, "test")
+
+	d1, err := createLockedDirectory(path, 0755)
+	qt.Assert(t, qt.IsNil(err))
+	defer d1.Close()
+
+	_, err = createLockedDirectory(path, 0755)
+	qt.Assert(t, qt.ErrorIs(err, os.ErrExist))
+
+	tmp, err := os.Open(path)
+	qt.Assert(t, qt.IsNil(err))
+	defer tmp.Close()
+
+	qt.Assert(t, qt.ErrorIs(flock(tmp, unix.LOCK_SH|unix.LOCK_NB), unix.EWOULDBLOCK))
 }
 
 func TestFileIsTTY(t *testing.T) {
