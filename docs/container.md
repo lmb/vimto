@@ -1,6 +1,11 @@
 # Container format
 
-The container (or directory) must contain a file `/boot/vmlinuz` which is used to boot the VM.
+The container must contain one of these files in order to boot the VM.
+
+1. `/boot/vmlinux`
+2. `/boot/vmlinuz`
+
+The first existing file is used.
 
 Other files and directories in the container are merged with the host filesystem
 using an overlayfs mount inside the VM.

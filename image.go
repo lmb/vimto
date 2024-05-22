@@ -18,8 +18,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const imageKernelPath = "boot/vmlinuz"
-
 // imageCache ensures that multiple invocations of vimto don't download the
 // same images over and over again.
 //
@@ -126,17 +124,63 @@ func populateDirectoryOnce(path string, fn func(string) error) (lock *os.File, _
 }
 
 type image struct {
-	Name      string
+	// The image name in OCIspeak, for example "example.com/foo:latest".
+	Name string
+
+	// Path to directory containing the contents of the image.
 	Directory string
-	dir       *os.File
+
+	// The directory file descriptor holding a cache lock.
+	lock *os.File
 }
 
 func (img *image) Close() error {
-	return img.dir.Close()
+	if img != nil {
+		return img.lock.Close()
+	}
+	return nil
 }
 
-func (img *image) Kernel() string {
-	return filepath.Join(img.Directory, imageKernelPath)
+type bootFiles struct {
+	// Path to the kernel to boot.
+	Kernel string
+
+	// Path to a directory to be overlaid over the root filesystem. Optional.
+	Overlay string
+
+	// Source OCI image. Optional.
+	Image *image
+}
+
+func newBootFiles(path string) (*bootFiles, error) {
+	for _, kernel := range []string{
+		"boot/vmlinux",
+		"boot/vmlinuz",
+	} {
+		kernelPath := filepath.Join(path, kernel)
+		if _, err := os.Stat(kernelPath); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return nil, err
+		}
+
+		return &bootFiles{
+			Kernel:  kernelPath,
+			Overlay: path,
+		}, nil
+	}
+
+	return nil, fmt.Errorf("no kernel found in %s", path)
+}
+
+func newBootFilesFromImage(img *image) (*bootFiles, error) {
+	bf, err := newBootFiles(img.Directory)
+	if err != nil {
+		return nil, fmt.Errorf("image %s: %w", img.Name, err)
+	}
+
+	bf.Image = img
+	return bf, nil
 }
 
 func fetchImage(ctx context.Context, cli *docker.Client, refStr string, status io.Writer) (string, string, error) {

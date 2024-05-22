@@ -115,11 +115,11 @@ func goTestCmd(cfg *config, flags []string, goBinary string, goArgs []string) er
 	}
 
 	// Prime the cache before invoking the go binary.
-	_, _, cleanup, err := findKernel(cfg.Kernel)
+	bf, err := findBootFiles(cfg.Kernel)
 	if err != nil {
 		return err
 	}
-	defer cleanup()
+	defer bf.Image.Close()
 
 	execArgs := []string{exe}
 	// Retain command line arguments
@@ -162,11 +162,11 @@ func execCmd(cfg *config, args []string) error {
 		return errors.New("binary is not statically linked (did you build with CGO_ENABLED=0?)")
 	}
 
-	vmlinuz, rootOverlay, cleanup, err := findKernel(cfg.Kernel)
+	bf, err := findBootFiles(cfg.Kernel)
 	if err != nil {
 		return err
 	}
-	defer cleanup()
+	defer bf.Image.Close()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
@@ -195,7 +195,7 @@ func execCmd(cfg *config, args []string) error {
 	corePrefix := fmt.Sprintf("core-%x-", tmp)
 
 	cmd := &command{
-		Kernel:      vmlinuz,
+		Kernel:      bf.Kernel,
 		Memory:      cfg.Memory,
 		SMP:         cfg.SMP,
 		Path:        path,
@@ -205,7 +205,7 @@ func execCmd(cfg *config, args []string) error {
 		Stdin:       os.Stdin,
 		Stdout:      os.Stdout,
 		Stderr:      os.Stderr,
-		RootOverlay: rootOverlay,
+		RootOverlay: bf.Overlay,
 		Sysctls: []sysctl{
 			{"kernel.core_pattern", filepath.Join(wd, corePrefix+"%e.%p.%t")},
 		},
@@ -234,55 +234,49 @@ func execCmd(cfg *config, args []string) error {
 	return waitErr
 }
 
-func findKernel(kernel string) (vmlinuz, overlay string, cleanup func() error, err error) {
+func findBootFiles(kernel string) (_ *bootFiles, err error) {
 	closeOnError := func(c io.Closer) {
 		if err != nil {
 			c.Close()
 		}
 	}
-	cleanup = func() error { return nil }
 
-	if info, err := os.Stat(kernel); errors.Is(err, os.ErrNotExist) {
+	if kernel == "" {
+		return nil, errors.New("no kernel specified")
+	}
+
+	info, err := os.Stat(kernel)
+	if errors.Is(err, os.ErrNotExist) {
 		// Assume that kernel is a reference to an image.
 		cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
 		if err != nil {
-			return "", "", nil, fmt.Errorf("create docker client: %w", err)
+			return nil, fmt.Errorf("create docker client: %w", err)
 		}
 		defer cli.Close()
 
 		cache, err := newImageCache(cli)
 		if err != nil {
-			return "", "", nil, fmt.Errorf("image cache: %w", err)
+			return nil, fmt.Errorf("image cache: %w", err)
 		}
 
-		oi, err := cache.Acquire(context.Background(), kernel, os.Stdout)
+		img, err := cache.Acquire(context.Background(), kernel, os.Stdout)
 		if err != nil {
-			return "", "", nil, fmt.Errorf("retrieve kernel from OCI image: %w", err)
+			return nil, fmt.Errorf("retrieve kernel from OCI image: %w", err)
 		}
-		defer closeOnError(oi)
-		cleanup = oi.Close
+		defer closeOnError(img)
 
-		overlay = oi.Directory
-		vmlinuz = oi.Kernel()
-	} else if err == nil {
-		if info.IsDir() {
-			// Kernel is path to an extracted image on disk.
-			overlay = kernel
-			vmlinuz = filepath.Join(overlay, imageKernelPath)
-		} else {
-			// Kernel is a file on disk.
-			vmlinuz = kernel
-		}
-	} else {
+		return newBootFilesFromImage(img)
+	} else if err != nil {
 		// Unexpected error from stat, maybe not allowed to access it?
-		return "", "", nil, fmt.Errorf("kernel: %w", err)
+		return nil, err
 	}
 
-	if _, err := os.Stat(vmlinuz); err != nil {
-		return "", "", nil, fmt.Errorf("invalid kernel: %w", err)
+	if info.IsDir() {
+		return newBootFiles(kernel)
 	}
 
-	return vmlinuz, overlay, cleanup, nil
+	// Kernel is a file on disk.
+	return &bootFiles{Kernel: kernel}, nil
 }
 
 func findExecutable() (string, error) {

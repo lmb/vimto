@@ -81,9 +81,9 @@ func TestExecutable(t *testing.T) {
 		}
 	}
 
-	image := mustFetchKernelImage(t)
-	env = append(env, "IMAGE="+image.Name)
-	env = append(env, "KERNEL="+image.Kernel())
+	bf := mustFetchKernelImage(t)
+	env = append(env, "IMAGE="+bf.Image.Name)
+	env = append(env, "KERNEL="+bf.Kernel)
 	env = append(env, fmt.Sprintf("UID=%d", os.Geteuid()))
 
 	scripttest.Test(t, context.Background(), e, env, "testdata/*.txt")
@@ -97,7 +97,7 @@ func kernelImage() string {
 	return image
 }
 
-var fetchKernelImage = sync.OnceValues(func() (*image, error) {
+var fetchKernelImage = sync.OnceValues(func() (*bootFiles, error) {
 	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
 	if err != nil {
 		return nil, err
@@ -109,16 +109,21 @@ var fetchKernelImage = sync.OnceValues(func() (*image, error) {
 		return nil, err
 	}
 
-	return cache.Acquire(context.Background(), kernelImage(), io.Discard)
+	img, err := cache.Acquire(context.Background(), kernelImage(), io.Discard)
+	if err != nil {
+		return nil, err
+	}
+
+	return newBootFilesFromImage(img)
 })
 
 // mustFetchKernelImage fetches a kernel image once for the entire lifetime
 // of the test binary.
-func mustFetchKernelImage(tb testing.TB) *image {
-	image, err := fetchKernelImage()
+func mustFetchKernelImage(tb testing.TB) *bootFiles {
+	bf, err := fetchKernelImage()
 	qt.Assert(tb, qt.IsNil(err))
 	// NB: Do not call image.Close()!
-	return image
+	return bf
 }
 
 var globExists = script.Command(

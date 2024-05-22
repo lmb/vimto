@@ -38,7 +38,7 @@ func TestQemuTTY(t *testing.T) {
 
 	var stderr bytes.Buffer
 	cmd := command{
-		Kernel: image.Kernel(),
+		Kernel: image.Kernel,
 		Memory: "128M",
 		SMP:    "cpus=1",
 		Path:   "sh",
