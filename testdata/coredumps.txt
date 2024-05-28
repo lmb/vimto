@@ -1,4 +1,4 @@
-config kernel="${IMAGE}"
+config kernel="${KERNEL}"
 
 # Ensure that ulimit inside the VM is raised.
 vimto exec -- sh -c 'ulimit -c'

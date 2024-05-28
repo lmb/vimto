@@ -1,0 +1,3 @@
+# Load the kernel from an OCI image.
+config kernel="${IMAGE}"
+vimto exec true
