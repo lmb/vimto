@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +18,7 @@ import (
 
 	docker "github.com/docker/docker/client"
 	"github.com/go-quicktest/qt"
+	"golang.org/x/sys/unix"
 	"rsc.io/script"
 	"rsc.io/script/scripttest"
 )
@@ -43,6 +48,7 @@ func TestExecutable(t *testing.T) {
 
 	e := script.NewEngine()
 	e.Cmds["glob-exists"] = globExists
+	e.Cmds["gdb"] = gdbStub
 	e.Cmds["new-tmp"] = script.Command(script.CmdUsage{
 		Summary: "use a distinct temp directory",
 		Detail: []string{
@@ -160,3 +166,160 @@ var globExists = script.Command(
 		return nil, nil
 	},
 )
+
+var gdbStub = script.Command(
+	script.CmdUsage{
+		Summary: "send raw commands to a gdb stub",
+		Args:    "target packets...",
+	},
+	func(s *script.State, args ...string) (script.WaitFunc, error) {
+		if len(args) < 1 {
+			return nil, script.ErrUsage
+		}
+
+		target := args[0]
+
+		var packets []string
+		for _, cmd := range args[1:] {
+			packets = append(packets, fmt.Sprintf("$%s#%02x", cmd, gdbChecksum(cmd)))
+		}
+
+		var stdout, stderr strings.Builder
+		errs := make(chan error, 1)
+		go func() {
+			defer close(errs)
+
+			ctx, cancel := context.WithTimeout(s.Context(), 5*time.Second)
+			defer cancel()
+
+			conn, err := tryDial(ctx, "tcp", target)
+			if err != nil {
+				errs <- fmt.Errorf("connect to gdb stub: %w", err)
+				return
+			}
+			defer conn.Close()
+
+			buf := bufio.NewReader(conn)
+			for _, packet := range packets {
+				if err := conn.SetWriteDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+					errs <- err
+					return
+				}
+
+				_, err := io.WriteString(conn, packet)
+				if err != nil {
+					errs <- err
+					return
+				}
+
+				response, err := gdbReadResponse(buf)
+				if err != nil {
+					errs <- fmt.Errorf("read response: %w", err)
+					return
+				}
+
+				switch {
+				case response == "":
+					// https://sourceware.org/gdb/current/onlinedocs/gdb.html/Standard-Replies.html#Standard-Replies
+					errs <- fmt.Errorf("packet %q is not implemented", packet)
+					return
+				case strings.HasPrefix("E ", response),
+					strings.HasPrefix("E.", response):
+					fmt.Fprintln(&stderr, response)
+				default:
+					fmt.Fprintln(&stdout, response)
+				}
+			}
+		}()
+
+		return func(s *script.State) (string, string, error) {
+			err := <-errs
+			return stdout.String(), stderr.String(), err
+		}, nil
+	},
+)
+
+func tryDial(ctx context.Context, network, addr string) (net.Conn, error) {
+	var d net.Dialer
+	for {
+		conn, err := d.DialContext(ctx, network, addr)
+		if errors.Is(err, unix.ECONNREFUSED) {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(50 * time.Millisecond):
+				continue
+			}
+		} else if err != nil {
+			return nil, err
+		}
+
+		return conn, nil
+	}
+}
+
+func gdbChecksum[T interface{ ~[]byte | ~string }](data T) (sum byte) {
+	for _, d := range []byte(data) {
+		sum += d
+	}
+	return
+}
+
+func gdbReadResponse(r *bufio.Reader) (string, error) {
+	const (
+		ack      byte = '+'
+		start         = '$'
+		end           = '#'
+		checksum      = iota
+	)
+
+	var packet, csumBytes []byte
+	next := ack
+read:
+	for {
+		c, err := r.ReadByte()
+		if err != nil {
+			return "", err
+		}
+
+		switch {
+		case next == ack && c == ack:
+			next = start
+			continue
+
+		case next == start && c == start:
+			next = end
+			continue
+
+		case next == end && c == end:
+			next = checksum
+			continue
+
+		case next == end:
+			packet = append(packet, c)
+			continue
+
+		case next == checksum:
+			csumBytes = append(csumBytes, c)
+			if len(csumBytes) == 2 {
+				break read
+			}
+			continue
+		}
+
+		return "", fmt.Errorf("expected %v got %v", rune(next), rune(c))
+	}
+
+	tmp := make([]byte, 1)
+	if _, err := hex.Decode(tmp, csumBytes); err != nil {
+		return "", fmt.Errorf("decode checksum: %w", err)
+	}
+
+	haveCsum := tmp[0]
+	wantCsum := gdbChecksum(packet)
+	if wantCsum != haveCsum {
+		return "", fmt.Errorf("invalid checksum 0x%x for %q (want 0x%2x)", haveCsum, string(packet), wantCsum)
+	}
+
+	return string(packet), nil
+}

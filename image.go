@@ -51,6 +51,10 @@ func (ic *imageCache) Acquire(ctx context.Context, img string, status io.Writer)
 		return nil, fmt.Errorf("fetch image: %w", err)
 	}
 
+	// Replace sha256:deadbeef with sha256@deadbeef to avoid colon being
+	// interpreted as a path separator.
+	digest = strings.Replace(digest, ":", "@", 1)
+
 	lock, path, err := populateDirectoryOnce(filepath.Join(ic.baseDir, digest), func(path string) error {
 		return extractImage(ctx, ic.cli, refStr, path)
 	})

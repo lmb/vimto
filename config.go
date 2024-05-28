@@ -19,6 +19,7 @@ type config struct {
 	Memory   string          `toml:"memory"`
 	SMP      string          `toml:"smp"`
 	User     string          `toml:"user"`
+	GDB      string          `toml:"-"`
 	Setup    []configCommand `toml:"setup"`
 	Teardown []configCommand `toml:"teardown"`
 }
@@ -111,6 +112,14 @@ func configFlags(name string, cfg *config) *flag.FlagSet {
 		}
 
 		cfg.User = "root"
+		return nil
+	})
+	fs.BoolFunc("gdb", "enable GDB server", func(s string) error {
+		if s != "true" {
+			return errors.New("flag only accepts true")
+		}
+
+		cfg.GDB = "localhost:1234"
 		return nil
 	})
 
