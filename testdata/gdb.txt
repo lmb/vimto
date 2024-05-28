@@ -1,0 +1,11 @@
+config kernel="${KERNEL}"
+
+vimto -gdb exec true &
+
+# The gdbstub is reachable and accepts commands.
+gdb localhost:1234 c
+stdout W00
+
+# Output contains instructions how to connect.
+wait
+stdout 'target remote'

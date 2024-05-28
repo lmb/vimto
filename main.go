@@ -109,6 +109,10 @@ func goTestCmd(cfg *config, flags []string, goBinary string, goArgs []string) er
 		}
 	}
 
+	if cfg.GDB != "" {
+		return fmt.Errorf("can't enable gdb integration when running multiple tests")
+	}
+
 	exe, err := findExecutable()
 	if err != nil {
 		return err
@@ -168,6 +172,22 @@ func execCmd(cfg *config, args []string) error {
 	}
 	defer bf.Image.Close()
 
+	if cfg.GDB != "" {
+		fmt.Println("Starting GDB server with CPU halted, connect using:")
+		args := []string{
+			"-ex", fmt.Sprintf("target remote %s", cfg.GDB),
+		}
+		if bf.Overlay != "" {
+			if strings.Contains(bf.Overlay, ":") {
+				// Can't figure out how to avoid gdb interpreting the colon
+				// as a directory separator.
+				return fmt.Errorf("path %q contains a colon", bf.Overlay)
+			}
+			args = append(args, "-ex", fmt.Sprintf("dir %q", bf.Overlay))
+		}
+		fmt.Printf("\tgdb %s %s\n", shellquote.Join(args...), bf.Kernel)
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
@@ -201,6 +221,7 @@ func execCmd(cfg *config, args []string) error {
 		Path:        path,
 		Args:        fs.Args(),
 		Dir:         wd,
+		GDB:         cfg.GDB,
 		User:        cfg.User,
 		Stdin:       os.Stdin,
 		Stdout:      os.Stdout,
