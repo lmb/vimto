@@ -1,4 +1,4 @@
-config kernel="${IMAGE}"
+config kernel="${KERNEL}"
 new-tmp
 
 # Exit status and stdout, stderr of tests is correctly forwarded.

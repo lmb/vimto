@@ -1,4 +1,4 @@
-config kernel="${IMAGE}"
+config kernel="${KERNEL}"
 
 # Ensure that running without KVM is supported.
 env VIMTO_DISABLE_KVM=true
