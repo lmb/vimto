@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/u-root/u-root/pkg/qemu"
+	"github.com/hugelgupf/vmtest/qemu"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/unix"
 )
@@ -128,29 +128,55 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	// subprocesses with this port as stdin, stdout and stderr.
 	virtioPorts.Chardevs[chardev("stdio")] = stdioPortName
 
-	devices := []qemu.Device{
-		qemu.ArbitraryArgs{
-			"-nodefaults",
-			"-display", "none",
-			"-cpu", "max",
-			"-chardev", "stdio,id=stdio",
-			"-m", cmd.Memory,
-			"-smp", cmd.SMP,
-		},
-		qemu.VirtioRandom{},
-		readOnlyRootfs{},
-		exitOnPanic{},
-		disablePS2Probing{},
-		disableRaidAutodetect{},
-		&p9Root{
-			"/",
-		},
-		fds,
-		cds,
-		ports,
-		virtioPorts,
-		consoleOnSerialPort{consolePort},
+	qemuOpts := qemu.Options{
+		Kernel: cmd.Kernel,
 	}
+
+	var binary string
+	switch runtime.GOARCH {
+	case "amd64":
+		binary = "qemu-system-x86_64"
+		qemuOpts.AppendKernel(earlyprintkOnSerialPort{consolePort}.KArgs()...)
+	case "arm64":
+		binary = "qemu-system-aarch64"
+		qemuOpts.AppendKernel(earlycon{}.KArgs()...)
+		qemuOpts.AppendQEMU("-machine", "virt,gic-version=max")
+	default:
+		return fmt.Errorf("unsupported GOARCH %s", runtime.GOARCH)
+	}
+
+	qemuOpts.QEMUCommand, err = exec.LookPath(binary)
+	if err != nil {
+		return err
+	}
+
+	p9r := &p9Root{
+		"/",
+	}
+
+	qemuOpts.AppendQEMU(
+		"-nodefaults",
+		"-display", "none",
+		"-cpu", "max",
+		"-chardev", "stdio,id=stdio",
+		"-m", cmd.Memory,
+		"-smp", cmd.SMP,
+	)
+
+	qemuOpts.AppendQEMU(p9r.Cmdline()...)
+	qemuOpts.AppendQEMU(fds.Cmdline()...)
+	qemuOpts.AppendQEMU(cds.Cmdline()...)
+	qemuOpts.AppendQEMU(ports.Cmdline()...)
+	qemuOpts.AppendQEMU(virtioPorts.Cmdline()...)
+	qemuOpts.AppendQEMU(exitOnPanic{}.Cmdline()...)
+
+	qemuOpts.AppendKernel(readOnlyRootfs{}.KArgs()...)
+	qemuOpts.AppendKernel(exitOnPanic{}.KArgs()...)
+	qemuOpts.AppendKernel(disablePS2Probing{}.KArgs()...)
+	qemuOpts.AppendKernel(disableRaidAutodetect{}.KArgs()...)
+	qemuOpts.AppendKernel(p9r.KArgs()...)
+	qemuOpts.AppendKernel(consoleOnSerialPort{consolePort}.KArgs()...)
+	qemu.VirtioRandom()(nil, &qemuOpts)
 
 	disableKVM := false
 	if env := os.Getenv(envDisableKVM); env != "" {
@@ -161,26 +187,9 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	}
 
 	if !disableKVM {
-		devices = append(devices, qemu.ArbitraryArgs{"-enable-kvm"})
+		qemuOpts.AppendQEMU("-enable-kvm")
 	} else if cmd.Stderr != nil {
 		fmt.Fprintln(cmd.Stderr, "Warning: KVM disabled, performance will be limited.")
-	}
-
-	var binary string
-	switch runtime.GOARCH {
-	case "amd64":
-		binary = "qemu-system-x86_64"
-		devices = append(devices, earlyprintkOnSerialPort{consolePort})
-
-	case "arm64":
-		binary = "qemu-system-aarch64"
-		devices = append(devices,
-			qemu.ArbitraryArgs{"-machine", "virt,gic-version=max"},
-			earlycon{},
-		)
-
-	default:
-		return fmt.Errorf("unsupported GOARCH %s", runtime.GOARCH)
 	}
 
 	for name, port := range cmd.SerialPorts {
@@ -196,11 +205,12 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 
 		id := fmt.Sprintf("sd-9p-%d", i)
 		mountTags[id] = dir
-		devices = append(devices, &p9SharedDirectory{
+		p9 := p9SharedDirectory{
 			ID:   fsdev(id),
 			Tag:  id,
 			Path: dir,
-		})
+		}
+		qemuOpts.AppendQEMU(p9.Cmdline()...)
 	}
 
 	var rootOverlay string
@@ -210,16 +220,18 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 			return err
 		}
 
-		devices = append(devices, &p9SharedDirectory{
+		p9 := &p9SharedDirectory{
 			fsdev(p9OverlayTag),
 			p9OverlayTag,
 			rootOverlay,
 			true,
-		})
+		}
+		qemuOpts.AppendQEMU(p9.Cmdline()...)
 	}
 
 	if cmd.GDB != "" {
-		devices = append(devices, gdbServer{cmd.GDB})
+		qemuOpts.AppendQEMU(gdbServer{cmd.GDB}.Cmdline()...)
+		qemuOpts.AppendKernel(gdbServer{cmd.GDB}.KArgs()...)
 	}
 
 	uid := os.Geteuid()
@@ -270,21 +282,10 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	}
 
 	// init has to go last since we stop processing of KArgs after.
-	devices = append(devices, initWithArgs{
+	qemuOpts.AppendKernel(initWithArgs{
 		init,
 		[]string{stdioPortName, controlPortName},
-	})
-
-	qemuPath, err := exec.LookPath(binary)
-	if err != nil {
-		return err
-	}
-
-	qemuOpts := qemu.Options{
-		QEMUPath: qemuPath,
-		Kernel:   cmd.Kernel,
-		Devices:  devices,
-	}
+	}.KArgs()...)
 
 	qemuArgs, err := qemuOpts.Cmdline()
 	if err != nil {
