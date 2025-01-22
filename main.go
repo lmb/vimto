@@ -13,7 +13,6 @@ import (
 	"slices"
 	"strings"
 
-	docker "github.com/docker/docker/client"
 	"github.com/kballard/go-shellquote"
 	"golang.org/x/sys/unix"
 )
@@ -269,13 +268,7 @@ func findBootFiles(kernel string) (_ *bootFiles, err error) {
 	info, err := os.Stat(kernel)
 	if errors.Is(err, os.ErrNotExist) {
 		// Assume that kernel is a reference to an image.
-		cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
-		if err != nil {
-			return nil, fmt.Errorf("create docker client: %w", err)
-		}
-		defer cli.Close()
-
-		cache, err := newImageCache(cli)
+		cache, err := newImageCache()
 		if err != nil {
 			return nil, fmt.Errorf("image cache: %w", err)
 		}

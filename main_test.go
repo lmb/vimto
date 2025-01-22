@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	docker "github.com/docker/docker/client"
 	"github.com/go-quicktest/qt"
 	"golang.org/x/sys/unix"
 	"rsc.io/script"
@@ -104,13 +103,7 @@ func kernelImage() string {
 }
 
 var fetchKernelImage = sync.OnceValues(func() (*bootFiles, error) {
-	cli, err := docker.NewClientWithOpts(docker.FromEnv, docker.WithAPIVersionNegotiation())
-	if err != nil {
-		return nil, err
-	}
-	defer cli.Close()
-
-	cache, err := newImageCache(cli)
+	cache, err := newImageCache()
 	if err != nil {
 		return nil, err
 	}
