@@ -45,6 +45,7 @@ Usage: %s [flags] [command] [--] ...
 
 Available commands:
 	exec        Execute a command inside a VM
+	flush-cache Clear the image cache
 
 Flags:
 `
@@ -72,6 +73,9 @@ func run(args []string) error {
 	switch cmd := fs.Arg(0); {
 	case cmd == "exec":
 		err = execCmd(&cfg, fs.Args()[1:])
+
+	case cmd == "flush-cache":
+		err = flushCacheCmd(fs.Args()[1:])
 
 	case strings.HasPrefix(cmd, "go"):
 		// This is an invocation of go test, possibly via a pre-relase binary
@@ -352,4 +356,35 @@ func preserveTestBinary(path, wd, corePrefix string) error {
 
 	_, err = io.Copy(dst, src)
 	return err
+}
+
+// flushCacheCmd deletes the image cache directory by first renaming it
+// and then removing it to handle concurrent access.
+func flushCacheCmd(args []string) error {
+	if len(args) > 0 {
+		return fmt.Errorf("flush-cache command takes no arguments")
+	}
+
+	// Generate a random suffix for the temporary directory
+	tmp := make([]byte, 4)
+	if _, err := rand.Read(tmp); err != nil {
+		return fmt.Errorf("generate random suffix: %w", err)
+	}
+	tmpDir := userCacheDir + fmt.Sprintf(".%x", tmp)
+
+	// Rename the cache directory to prevent another process from seeing
+	// a partially delete cache.
+	if err := os.Rename(userCacheDir, tmpDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("rename cache directory: %w", err)
+	}
+
+	// Remove the renamed directory
+	if err := os.RemoveAll(tmpDir); err != nil {
+		return fmt.Errorf("remove cache directory: %w", err)
+	}
+
+	return nil
 }
