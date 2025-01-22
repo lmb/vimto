@@ -12,6 +12,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/adrg/xdg"
 	"github.com/docker/docker/pkg/archive"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -29,19 +30,14 @@ type imageCache struct {
 	baseDir string
 }
 
-func newImageCache() (*imageCache, error) {
-	allCache := filepath.Join(os.TempDir(), "vimto")
-	if err := os.MkdirAll(allCache, 0777); err != nil {
-		return nil, err
-	}
+var userCacheDir = filepath.Join(xdg.CacheHome, "vimto")
 
-	uid := os.Getuid()
-	userCache := filepath.Join(allCache, fmt.Sprint(uid))
-	if err := os.Mkdir(userCache, 0755); err != nil && !errors.Is(err, os.ErrExist) {
+func newImageCache() (*imageCache, error) {
+	if err := os.MkdirAll(userCacheDir, 0700); err != nil && !errors.Is(err, os.ErrExist) {
 		return nil, fmt.Errorf("create cache directory: %w", err)
 	}
 
-	return &imageCache{userCache}, nil
+	return &imageCache{userCacheDir}, nil
 }
 
 // Acquire an image from the cache.
