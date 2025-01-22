@@ -113,7 +113,7 @@ func goTestCmd(cfg *config, flags []string, goBinary string, goArgs []string) er
 	}
 
 	if cfg.GDB != "" {
-		return fmt.Errorf("can't enable gdb integration when running multiple tests")
+		return fmt.Errorf("can't enable gdb integration when invoking via go toolchain")
 	}
 
 	exe, err := findExecutable()
