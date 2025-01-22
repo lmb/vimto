@@ -53,7 +53,6 @@ All available options and their values are in [testdata/default.toml](./testdata
 * A recent version of `qemu` (8.1.3 is known to work)
 * A Linux kernel with the necessary configuration (>= 4.9 is known to work)
 * KVM (optional, see [VIMTO_DISABLE_KVM](docs/tips.md))
-* Docker (optional, to fetch kernels from OCI registries)
 
 Here is a non-exhaustive list of required Linux options:
 

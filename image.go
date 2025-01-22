@@ -1,20 +1,23 @@
 package main
 
 import (
-	"archive/tar"
 	"context"
-	"encoding/json"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
+	"runtime"
+	"slices"
+	"time"
 
-	"github.com/docker/docker/api/types"
-	docker "github.com/docker/docker/client"
-	"github.com/docker/docker/pkg/jsonmessage"
+	"github.com/docker/docker/pkg/archive"
+	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/schollz/progressbar/v3"
 	"golang.org/x/sys/unix"
 )
 
@@ -23,11 +26,10 @@ import (
 //
 // The main concern is startup speed of vimto.
 type imageCache struct {
-	cli     *docker.Client
 	baseDir string
 }
 
-func newImageCache(cli *docker.Client) (*imageCache, error) {
+func newImageCache() (*imageCache, error) {
 	allCache := filepath.Join(os.TempDir(), "vimto")
 	if err := os.MkdirAll(allCache, 0777); err != nil {
 		return nil, err
@@ -39,30 +41,35 @@ func newImageCache(cli *docker.Client) (*imageCache, error) {
 		return nil, fmt.Errorf("create cache directory: %w", err)
 	}
 
-	return &imageCache{cli, userCache}, nil
+	return &imageCache{userCache}, nil
 }
 
 // Acquire an image from the cache.
 //
 // The image remains valid even after closing the cache.
-func (ic *imageCache) Acquire(ctx context.Context, img string, status io.Writer) (_ *image, err error) {
-	refStr, digest, err := fetchImage(ctx, ic.cli, img, status)
+func (ic *imageCache) Acquire(ctx context.Context, refStr string, status io.Writer) (_ *image, err error) {
+	ref, err := name.ParseReference(refStr)
 	if err != nil {
-		return nil, fmt.Errorf("fetch image: %w", err)
+		return nil, fmt.Errorf("parsing reference %q: %w", refStr, err)
 	}
 
-	// Replace sha256:deadbeef with sha256@deadbeef to avoid colon being
-	// interpreted as a path separator.
-	digest = strings.Replace(digest, ":", "@", 1)
+	// Use the sha256 of the canonical reference as the cache key. This means
+	// that images / tags pointing at the blob will have separate cache entries.
+	dir := fmt.Sprintf("%x", sha256.Sum256([]byte(ref.Name())))
 
-	lock, path, err := populateDirectoryOnce(filepath.Join(ic.baseDir, digest), func(path string) error {
-		return extractImage(ctx, ic.cli, refStr, path)
+	lock, path, err := populateDirectoryOnce(filepath.Join(ic.baseDir, dir), func(path string) error {
+		err := fetchImage(ctx, refStr, path, status)
+		if err != nil {
+			return fmt.Errorf("fetch image: %w", err)
+		}
+
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	return &image{img, path, lock}, nil
+	return &image{refStr, path, lock}, nil
 }
 
 func populateDirectoryOnce(path string, fn func(string) error) (lock *os.File, _ string, err error) {
@@ -187,143 +194,68 @@ func newBootFilesFromImage(img *image) (*bootFiles, error) {
 	return bf, nil
 }
 
-func fetchImage(ctx context.Context, cli *docker.Client, refStr string, status io.Writer) (string, string, error) {
-	if refStr, digest, err := imageID(ctx, cli, refStr); err == nil {
-		// Found a cached image, use that.
-		// TODO: We don't notice if the tag changes since we don't pull
-		// again if we can resolve refStr to id locally.
-		return refStr, digest, nil
-	}
-
-	remotePullReader, err := cli.ImagePull(ctx, refStr, types.ImagePullOptions{})
-	if err != nil {
-		return "", "", fmt.Errorf("cannot pull image %s: %w", refStr, err)
-	}
-	defer remotePullReader.Close()
-
-	isTTY := false
-	if f, ok := status.(*os.File); ok {
-		isTTY, err = fileIsTTY(f)
-		if err != nil {
-			return "", "", fmt.Errorf("check whether output is tty: %w", err)
-		}
-	}
-
-	decoder := json.NewDecoder(remotePullReader)
-	for {
-		var pullResponse jsonmessage.JSONMessage
-		if err := decoder.Decode(&pullResponse); errors.Is(err, io.EOF) {
-			break
-		} else if err != nil {
-			return "", "", err
-		}
-
-		if err := pullResponse.Display(status, isTTY); err != nil {
-			return "", "", fmt.Errorf("docker response: %w", pullResponse.Error)
-		}
-	}
-
-	return imageID(ctx, cli, refStr)
+var remoteOptions = []remote.Option{
+	remote.WithUserAgent("vimto"),
+	remote.WithPlatform(v1.Platform{
+		OS:           "linux",
+		Architecture: runtime.GOARCH,
+	}),
 }
 
-func imageID(ctx context.Context, cli *docker.Client, refStr string) (string, string, error) {
-	image, _, err := cli.ImageInspectWithRaw(ctx, refStr)
+func fetchImage(ctx context.Context, refStr, dst string, status io.Writer) error {
+	ref, err := name.ParseReference(refStr)
 	if err != nil {
-		return "", "", fmt.Errorf("inspect image: %w", err)
+		return fmt.Errorf("parsing reference %q: %w", refStr, err)
 	}
 
-	if len(image.RepoDigests) < 1 {
-		return "", "", fmt.Errorf("no digest for %q", refStr)
+	bar := progressbar.NewOptions64(
+		-1,
+		progressbar.OptionSetDescription(fmt.Sprintf("Caching %s", ref.Name())),
+		progressbar.OptionSetWriter(status),
+		progressbar.OptionShowBytes(true),
+		progressbar.OptionShowTotalBytes(false),
+		progressbar.OptionThrottle(65*time.Millisecond),
+		progressbar.OptionShowCount(),
+		progressbar.OptionSpinnerType(14),
+		progressbar.OptionFullWidth(),
+		progressbar.OptionSetRenderBlankState(true),
+		progressbar.OptionClearOnFinish(),
+	)
+	defer bar.Finish()
+
+	options := append(slices.Clone(remoteOptions),
+		remote.WithContext(ctx),
+	)
+
+	rmt, err := remote.Get(ref, options...)
+	if err != nil {
+		return fmt.Errorf("get from remote: %w", err)
 	}
 
-	return image.RepoDigests[0], image.ID, nil
+	image, err := rmt.Image()
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(dst, 0755); err != nil {
+		return fmt.Errorf("create destination directory: %w", err)
+	}
+
+	rc := mutate.Extract(image)
+	defer rc.Close()
+
+	reader := readProxy{rc, bar}
+
+	return archive.UntarUncompressed(reader, dst, &archive.TarOptions{NoLchown: true})
 }
 
-func extractImage(ctx context.Context, cli *docker.Client, image, dst string) error {
-	cmd := exec.CommandContext(ctx, "docker", "buildx", "build", "--quiet", "--output", dst, "-")
-	cmd.Stdin = strings.NewReader(fmt.Sprintf("FROM %s\n", image))
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%w: %s", err, string(out))
-	}
-	return nil
+type readProxy struct {
+	io.Reader
+	*progressbar.ProgressBar
 }
 
-func extractTar(r io.Reader, path string) error {
-	tr := tar.NewReader(r)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("read tar header: %w", err)
-		}
-
-		dstPath, err := secureJoin(path, path, hdr.Name)
-		if err != nil {
-			return err
-		}
-
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(dstPath, 0755); err != nil {
-				return err
-			}
-
-		case tar.TypeReg:
-			dst, err := os.Create(dstPath)
-			if err != nil {
-				return err
-			}
-			defer dst.Close()
-
-			_, err = io.Copy(dst, tr)
-			if err != nil {
-				return err
-			}
-
-		case tar.TypeLink:
-			srcPath, err := secureJoin(path, path, hdr.Linkname)
-			if err != nil {
-				return fmt.Errorf("hard link: %w", err)
-			}
-
-			if err := os.Link(srcPath, dstPath); err != nil {
-				return err
-			}
-
-		case tar.TypeSymlink:
-			// Relative symlinks start from the location of the symlink.
-			srcPath, err := secureJoin(path, filepath.Dir(dstPath), hdr.Linkname)
-			if err != nil {
-				return fmt.Errorf("sym link: %w (dst: %s)", err, dstPath)
-			}
-
-			if err := os.Symlink(srcPath, dstPath); err != nil {
-				return err
-			}
-
-		default:
-			return fmt.Errorf("unexpected tar header type %d", hdr.Typeflag)
-		}
-	}
-}
-
-func secureJoin(base string, parts ...string) (string, error) {
-	base, err := filepath.Abs(base)
-	if err != nil {
-		return "", err
-	}
-
-	path := filepath.Join(parts...)
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(base, path)
-	}
-
-	if !strings.HasPrefix(path, base) {
-		return "", fmt.Errorf("invalid path %q (escapes %s)", path, base)
-	}
-
-	return path, nil
+func (rp readProxy) Read(p []byte) (int, error) {
+	n, err := rp.Reader.Read(p)
+	rp.ProgressBar.Add(n)
+	return n, err
 }
