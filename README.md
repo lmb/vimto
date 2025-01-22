@@ -13,7 +13,7 @@ vimto -kernel /path/to/vmlinuz -- go test .
 
 The tests are executed inside an ephemeral VM, with an [execution environment](docs/environment.md) which mimics the host.
 
-It's possible to obtain the kernel from a container image (requires Docker).
+It's possible to obtain the kernel from a container image.
 
 ```shell
 vimto -kernel example.org/reg/image:tag -- go test .
