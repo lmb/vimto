@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -72,7 +71,10 @@ type command struct {
 
 	SerialPorts       map[string]*os.File
 	SharedDirectories []string
+}
 
+type qemuCommand struct {
+	command
 	cmd   *exec.Cmd
 	tasks errgroup.Group
 	// Console contains boot diagnostics may only be read once tasks.Wait() has returned.
@@ -83,7 +85,7 @@ type command struct {
 	fakeStdin *os.File
 }
 
-func (cmd *command) Start(ctx context.Context) (err error) {
+func startQemu(ctx context.Context, c *command) (_ *qemuCommand, err error) {
 	closeOnError := func(c io.Closer) {
 		if err != nil {
 			c.Close()
@@ -93,9 +95,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	const controlPortName = "ctrl"
 	const stdioPortName = "stdio"
 
-	if cmd.cmd != nil {
-		return errors.New("qemu: already started")
-	}
+	cmd := &qemuCommand{command: *c}
 
 	fds := &fdSets{}
 	cds := &chardevs{}
@@ -107,7 +107,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	// Some platforms like the arm64 virt board only have a single console.
 	consoleHost, consoleGuest, err := unixSocketpair()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer closeOnError(consoleHost)
 	defer consoleGuest.Close()
@@ -117,7 +117,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	// The second serial port is used for communication between host and guest.
 	controlHost, controlGuest, err := unixSocketpair()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer controlHost.Close()
 	defer controlGuest.Close()
@@ -156,7 +156,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	if env := os.Getenv(envDisableKVM); env != "" {
 		disableKVM, err = strconv.ParseBool(env)
 		if err != nil {
-			return fmt.Errorf("%s: %w", envDisableKVM, err)
+			return nil, fmt.Errorf("%s: %w", envDisableKVM, err)
 		}
 	}
 
@@ -180,7 +180,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		)
 
 	default:
-		return fmt.Errorf("unsupported GOARCH %s", runtime.GOARCH)
+		return nil, fmt.Errorf("unsupported GOARCH %s", runtime.GOARCH)
 	}
 
 	for name, port := range cmd.SerialPorts {
@@ -191,7 +191,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	for i, dir := range cmd.SharedDirectories {
 		fstype, found := earlyMounts.pathIsBelowMount(dir)
 		if found && fstype != "tmpfs" {
-			return fmt.Errorf("directory %s is shadowed by %s mount in the guest", dir, fstype)
+			return nil, fmt.Errorf("directory %s is shadowed by %s mount in the guest", dir, fstype)
 		}
 
 		id := fmt.Sprintf("sd-9p-%d", i)
@@ -207,7 +207,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	if cmd.RootOverlay != "" {
 		rootOverlay, err = filepath.Abs(cmd.RootOverlay)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		devices = append(devices, &p9SharedDirectory{
@@ -227,17 +227,17 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	if cmd.User != "" {
 		usr, err := user.Lookup(cmd.User)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		uid, err = strconv.Atoi(usr.Uid)
 		if err != nil {
-			return fmt.Errorf("parse uid: %w", err)
+			return nil, fmt.Errorf("parse uid: %w", err)
 		}
 
 		gid, err = strconv.Atoi(usr.Gid)
 		if err != nil {
-			return fmt.Errorf("parse gid: %w", err)
+			return nil, fmt.Errorf("parse gid: %w", err)
 		}
 	}
 
@@ -266,7 +266,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 
 	init, err := findExecutable()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// init has to go last since we stop processing of KArgs after.
@@ -277,7 +277,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 
 	qemuPath, err := exec.LookPath(binary)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	qemuOpts := qemu.Options{
@@ -288,14 +288,14 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 
 	qemuArgs, err := qemuOpts.Cmdline()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	stdinIsDevZero := false
 	if f, ok := cmd.Stdin.(*os.File); ok {
 		stdinIsDevZero, err = fileIsDevZero(f)
 		if err != nil {
-			return fmt.Errorf("stdin: %w", err)
+			return nil, fmt.Errorf("stdin: %w", err)
 		}
 	}
 
@@ -305,7 +305,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		// Use an empty pipe instead.
 		fakeStdinGuest, fakeStdinHost, err := os.Pipe()
 		if err != nil {
-			return fmt.Errorf("create fake stdin: %w", err)
+			return nil, fmt.Errorf("create fake stdin: %w", err)
 		}
 		defer fakeStdinGuest.Close()
 		defer closeOnError(fakeStdinHost)
@@ -323,12 +323,12 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 
 	control, err := net.FileConn(controlHost)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer closeOnError(control)
 
 	if err := proc.Start(); err != nil {
-		return err
+		return nil, err
 	}
 
 	cmd.tasks.Go(func() error {
@@ -358,10 +358,10 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 
 	cmd.cmd = proc
 	cmd.results = results
-	return nil
+	return cmd, nil
 }
 
-func (cmd *command) Wait() error {
+func (cmd *qemuCommand) Wait() error {
 	defer cmd.fakeStdin.Close()
 
 	if err := cmd.cmd.Wait(); err != nil {

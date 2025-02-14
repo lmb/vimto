@@ -36,8 +36,10 @@ func TestQemuTTY(t *testing.T) {
 	defer r.Close()
 	defer w.Close()
 
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+
 	var stderr bytes.Buffer
-	cmd := command{
+	cmd, err := startQemu(ctx, &command{
 		Kernel: image.Kernel,
 		Memory: "128M",
 		SMP:    "cpus=1",
@@ -46,10 +48,8 @@ func TestQemuTTY(t *testing.T) {
 		Stdin:  tty,
 		Stdout: w,
 		Stderr: &stderr,
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	qt.Assert(t, qt.IsNil(cmd.Start(ctx)))
+	})
+	qt.Assert(t, qt.IsNil(err))
 
 	// Make sure we get EOF if the VM exits.
 	qt.Assert(t, qt.IsNil(w.Close()))

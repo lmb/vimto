@@ -241,11 +241,12 @@ func execCmd(cfg *config, args []string) error {
 		SharedDirectories: slices.Compact(sharedDirectories),
 	}
 
-	if err := cmd.Start(ctx); err != nil {
+	qemu, err := startQemu(ctx, cmd)
+	if err != nil {
 		return err
 	}
 
-	waitErr := cmd.Wait()
+	waitErr := qemu.Wait()
 	if waitErr == nil {
 		return nil
 	}
