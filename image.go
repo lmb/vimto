@@ -163,6 +163,8 @@ func newBootFiles(path string) (*bootFiles, error) {
 	for _, kernel := range []string{
 		"boot/vmlinux",
 		"boot/vmlinuz",
+		"arch/x86/boot/bzImage",
+		"vmlinux",
 	} {
 		kernelPath := filepath.Join(path, kernel)
 		if _, err := os.Stat(kernelPath); errors.Is(err, os.ErrNotExist) {

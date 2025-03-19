@@ -241,8 +241,12 @@ func execCmd(cfg *config, args []string) error {
 		SharedDirectories: slices.Compact(sharedDirectories),
 	}
 
-	qemu, err := startQemu(ctx, cmd)
+	qemu, err := newHypeVMM(cmd)
 	if err != nil {
+		return err
+	}
+
+	if err := qemu.Start(ctx); err != nil {
 		return err
 	}
 

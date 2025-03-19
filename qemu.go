@@ -615,7 +615,17 @@ func (consoleOnSerialPort) Cmdline() []string { return nil }
 
 func (cs consoleOnSerialPort) KArgs() []string {
 	return []string{
-		fmt.Sprintf("console=%s,115200", cs.Port),
+		fmt.Sprintf("console=%s", cs.Port),
+	}
+}
+
+type earlyprintkXen struct{}
+
+func (earlyprintkXen) Cmdline() []string { return nil }
+
+func (epk earlyprintkXen) KArgs() []string {
+	return []string{
+		"earlyprintk=xen",
 	}
 }
 
@@ -627,7 +637,7 @@ func (earlyprintkOnSerialPort) Cmdline() []string { return nil }
 
 func (epk earlyprintkOnSerialPort) KArgs() []string {
 	return []string{
-		fmt.Sprintf("earlyprintk=serial,%s,115200", epk.Port),
+		fmt.Sprintf("earlyprintk=serial,%s", epk.Port),
 	}
 }
 

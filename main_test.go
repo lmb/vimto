@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -47,7 +46,7 @@ func TestExecutable(t *testing.T) {
 
 	e := script.NewEngine()
 	e.Cmds["glob-exists"] = globExists
-	e.Cmds["gdb"] = gdbStub
+	e.Cmds["gdb"] = gdbCommand
 	e.Cmds["new-tmp"] = script.Command(script.CmdUsage{
 		Summary: "use a distinct temp directory",
 		Detail: []string{
@@ -160,7 +159,7 @@ var globExists = script.Command(
 	},
 )
 
-var gdbStub = script.Command(
+var gdbCommand = script.Command(
 	script.CmdUsage{
 		Summary: "send raw commands to a gdb stub",
 		Args:    "target packets...",
@@ -211,17 +210,12 @@ var gdbStub = script.Command(
 					return
 				}
 
-				switch {
-				case response == "":
-					// https://sourceware.org/gdb/current/onlinedocs/gdb.html/Standard-Replies.html#Standard-Replies
+				if response == "" {
 					errs <- fmt.Errorf("packet %q is not implemented", packet)
 					return
-				case strings.HasPrefix("E ", response),
-					strings.HasPrefix("E.", response):
-					fmt.Fprintln(&stderr, response)
-				default:
-					fmt.Fprintln(&stdout, response)
 				}
+
+				fmt.Fprintln(&stdout, response)
 			}
 		}()
 
@@ -249,70 +243,4 @@ func tryDial(ctx context.Context, network, addr string) (net.Conn, error) {
 
 		return conn, nil
 	}
-}
-
-func gdbChecksum[T interface{ ~[]byte | ~string }](data T) (sum byte) {
-	for _, d := range []byte(data) {
-		sum += d
-	}
-	return
-}
-
-func gdbReadResponse(r *bufio.Reader) (string, error) {
-	const (
-		ack      byte = '+'
-		start         = '$'
-		end           = '#'
-		checksum      = iota
-	)
-
-	var packet, csumBytes []byte
-	next := ack
-read:
-	for {
-		c, err := r.ReadByte()
-		if err != nil {
-			return "", err
-		}
-
-		switch {
-		case next == ack && c == ack:
-			next = start
-			continue
-
-		case next == start && c == start:
-			next = end
-			continue
-
-		case next == end && c == end:
-			next = checksum
-			continue
-
-		case next == end:
-			packet = append(packet, c)
-			continue
-
-		case next == checksum:
-			csumBytes = append(csumBytes, c)
-			if len(csumBytes) == 2 {
-				break read
-			}
-			continue
-		}
-
-		return "", fmt.Errorf("expected %v got %v", rune(next), rune(c))
-	}
-
-	tmp := make([]byte, 1)
-	if _, err := hex.Decode(tmp, csumBytes); err != nil {
-		return "", fmt.Errorf("decode checksum: %w", err)
-	}
-
-	haveCsum := tmp[0]
-	wantCsum := gdbChecksum(packet)
-	if wantCsum != haveCsum {
-		return "", fmt.Errorf("invalid checksum 0x%x for %q (want 0x%2x)", haveCsum, string(packet), wantCsum)
-	}
-
-	return string(packet), nil
 }

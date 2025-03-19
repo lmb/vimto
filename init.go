@@ -17,7 +17,7 @@ import (
 // Default options used to mount a 9pfs.
 //
 // - cache=mmap: required to avoid mmap returning EINVAL.
-const default9POptions = "version=9p2000.L,trans=virtio,access=any,msize=1048576,cache=mmap"
+const default9POptions = "access=any,msize=512000,cache=mmap"
 
 type syscaller interface {
 	mount(*mountPoint) error
