@@ -46,10 +46,11 @@ All available options and their values are in [testdata/default.toml](./testdata
 
 * Networking
 * Interactive shell sessions
+* Cross-arch tests (running `arm64` on `amd64` host for example)
 
 ## Requirements
 
-* An `amd64` or `arm64` host
+* An `amd64` or `arm64` host running Linux
 * A recent version of `qemu` (8.1.3 is known to work)
 * A Linux kernel with the necessary configuration (>= 4.9 is known to work)
 * KVM (optional, see [VIMTO_DISABLE_KVM](docs/tips.md))
