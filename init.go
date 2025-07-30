@@ -89,6 +89,7 @@ var earlyMounts = mountTable{
 	{"sys", "/sys", "sysfs", "", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV, true},
 	{"proc", "/proc", "proc", "", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV, true},
 	{"devtmpfs", "/dev", "devtmpfs", "mode=0755", unix.MS_NOSUID | unix.MS_STRICTATIME, true},
+	{"devpts", "/dev/pts", "devpts", "gid=5,mode=620", unix.MS_NOSUID | unix.MS_NOEXEC, true},
 	{"securityfs", "/sys/kernel/security", "securityfs", "", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV, false},
 	// We don't need tmpfs mounts since the root filesystem is already ephemeral.
 	// See prepareRoot().
@@ -114,6 +115,7 @@ var fsMagic = map[string]int64{
 	"bpf":        unix.BPF_FS_MAGIC,
 	"cgroup2":    unix.CGROUP2_SUPER_MAGIC,
 	"debugfs":    unix.DEBUGFS_MAGIC,
+	"devpts":     unix.DEVPTS_SUPER_MAGIC,
 	"devtmpfs":   unix.TMPFS_MAGIC,
 	"overlay":    unix.OVERLAYFS_SUPER_MAGIC,
 	"proc":       unix.PROC_SUPER_MAGIC,
