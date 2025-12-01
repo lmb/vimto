@@ -560,7 +560,10 @@ func (vios *virtioSerialPorts) Cmdline() []string {
 
 	args := []string{
 		// There seems to be an off by one error with max_ports.
-		"-device", fmt.Sprintf("virtio-serial,max_ports=%d", len(vios.Chardevs)+1),
+		//
+		// ioeventfd=off works around a weird race condition where writing to the serial
+		// console from inside the guest may get stuck waiting for a wakeup.
+		"-device", fmt.Sprintf("virtio-serial,max_ports=%d,ioeventfd=off", len(vios.Chardevs)+1),
 	}
 	for dev, name := range vios.Chardevs {
 		args = append(args,
