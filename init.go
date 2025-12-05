@@ -307,7 +307,19 @@ func minimalInit(sys syscaller, args []string) error {
 			fmt.Fprintf(stdio, "%s is not readable, execution might fail with %q\n", cmd.Path, err)
 		}
 
-		result := proc.Run()
+		result := proc.Start()
+		if result == nil {
+			// Work around a bug in virtio-console which doesn't deal well with concurrent
+			// access to a single serial port.
+			//
+			// It is crucial that we don't hold on to stdio, otherwise the runtime will
+			// opportunistically poll it, which causes writes to hang.
+			//
+			// See https://github.com/lmb/vimto/issues/29.
+			_ = stdio.Close()
+
+			result = proc.Wait()
+		}
 
 		if err := executeSimpleCommands(cmd.Teardown, cmd.Dir, cmd.Env); err != nil {
 			return fmt.Errorf("teardown: %w", err)
