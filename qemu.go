@@ -18,7 +18,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/u-root/u-root/pkg/qemu"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/unix"
 )
@@ -128,16 +127,17 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	// subprocesses with this port as stdin, stdout and stderr.
 	virtioPorts.Chardevs[chardev("stdio")] = stdioPortName
 
-	devices := []qemu.Device{
-		qemu.ArbitraryArgs{
+	devices := []device{
+		arbitraryArgs{
 			"-nodefaults",
+			"-nographic",
 			"-display", "none",
 			"-cpu", "max",
 			"-chardev", "stdio,id=stdio",
 			"-m", cmd.Memory,
 			"-smp", cmd.SMP,
 		},
-		qemu.VirtioRandom{},
+		virtioRandom{},
 		readOnlyRootfs{},
 		exitOnPanic{},
 		disablePS2Probing{},
@@ -161,7 +161,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	}
 
 	if !disableKVM {
-		devices = append(devices, qemu.ArbitraryArgs{"-enable-kvm"})
+		devices = append(devices, arbitraryArgs{"-enable-kvm"})
 	} else if cmd.Stderr != nil {
 		fmt.Fprintln(cmd.Stderr, "Warning: KVM disabled, performance will be limited.")
 	}
@@ -175,7 +175,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	case "arm64":
 		binary = "qemu-system-aarch64"
 		devices = append(devices,
-			qemu.ArbitraryArgs{"-machine", "virt,gic-version=max"},
+			arbitraryArgs{"-machine", "virt,gic-version=max"},
 			earlycon{},
 		)
 
@@ -275,22 +275,6 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		[]string{stdioPortName, controlPortName},
 	})
 
-	qemuPath, err := exec.LookPath(binary)
-	if err != nil {
-		return err
-	}
-
-	qemuOpts := qemu.Options{
-		QEMUPath: qemuPath,
-		Kernel:   cmd.Kernel,
-		Devices:  devices,
-	}
-
-	qemuArgs, err := qemuOpts.Cmdline()
-	if err != nil {
-		return err
-	}
-
 	stdinIsDevZero := false
 	if f, ok := cmd.Stdin.(*os.File); ok {
 		stdinIsDevZero, err = fileIsDevZero(f)
@@ -314,7 +298,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		cmd.fakeStdin = fakeStdinHost
 	}
 
-	proc := commandWithGracefulTermination(ctx, qemuArgs[0], qemuArgs[1:]...)
+	proc := commandWithGracefulTermination(ctx, binary, qemuCmdline(cmd.Kernel, devices)...)
 	proc.Stdin = stdin
 	proc.Stdout = cmd.Stdout
 	proc.Stderr = cmd.Stderr
@@ -419,6 +403,32 @@ type genericGuestError struct {
 
 func (gge *genericGuestError) Error() string {
 	return fmt.Sprintf("guest: %s", gge.Message)
+}
+
+type device interface {
+	Cmdline() []string
+	KArgs() []string
+}
+
+func qemuCmdline(kernel string, devices []device) []string {
+	var args []string
+
+	args = append(args,
+		"-nographic",
+		"-kernel", kernel,
+	)
+
+	var kargs []string
+	for _, dev := range devices {
+		args = append(args, dev.Cmdline()...)
+		kargs = append(kargs, dev.KArgs()...)
+	}
+
+	if len(kargs) > 0 {
+		args = append(args, "-append", strings.Join(kargs, " "))
+	}
+
+	return args
 }
 
 type initWithArgs struct {
@@ -709,3 +719,26 @@ func (p9sd *p9SharedDirectory) Cmdline() []string {
 func (*p9SharedDirectory) KArgs() []string {
 	return nil
 }
+
+// virtioRandom and arbitraryArgs were copied from u-root, available under BSD-3-Clause.
+// Copyright (c) 2012-2019, u-root Authors
+
+// virtioRandom is a Device that exposes a PCI random number generator to the
+// QEMU VM.
+type virtioRandom struct{}
+
+func (virtioRandom) Cmdline() []string {
+	return []string{"-device", "virtio-rng-pci"}
+}
+
+func (virtioRandom) KArgs() []string { return nil }
+
+// arbitraryArgs is a Device that allows users to add arbitrary arguments to
+// the QEMU command line.
+type arbitraryArgs []string
+
+func (aa arbitraryArgs) Cmdline() []string {
+	return aa
+}
+
+func (arbitraryArgs) KArgs() []string { return nil }
