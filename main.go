@@ -270,31 +270,35 @@ func findBootFiles(kernel string) (_ *bootFiles, err error) {
 	}
 
 	info, err := os.Stat(kernel)
-	if errors.Is(err, os.ErrNotExist) {
-		// Assume that kernel is a reference to an image.
-		cache, err := newImageCache()
-		if err != nil {
-			return nil, fmt.Errorf("image cache: %w", err)
+	if err == nil {
+		if info.IsDir() {
+			return newBootFiles(kernel)
 		}
 
-		img, err := cache.Acquire(context.Background(), kernel, os.Stdout)
-		if err != nil {
-			return nil, fmt.Errorf("retrieve kernel from OCI image: %w", err)
-		}
-		defer closeOnError(img)
-
-		return newBootFilesFromImage(img)
-	} else if err != nil {
+		// Kernel is a file on disk.
+		return &bootFiles{Kernel: kernel}, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
 		// Unexpected error from stat, maybe not allowed to access it?
-		return nil, err
+		return nil, fmt.Errorf("stat kernel: %w", err)
+	} else if first, _, ok := strings.Cut(kernel, "/"); ok && (first == "" || first == "." || first == "..") {
+		// This can't be a URL, so we don't fall through to treating it
+		// as an image.
+		return nil, fmt.Errorf("kernel %q: %w", kernel, os.ErrNotExist)
 	}
 
-	if info.IsDir() {
-		return newBootFiles(kernel)
+	// Assume that kernel is a reference to an image.
+	cache, err := newImageCache()
+	if err != nil {
+		return nil, fmt.Errorf("image cache: %w", err)
 	}
 
-	// Kernel is a file on disk.
-	return &bootFiles{Kernel: kernel}, nil
+	img, err := cache.Acquire(context.Background(), kernel, os.Stdout)
+	if err != nil {
+		return nil, fmt.Errorf("retrieve kernel from OCI image: %w", err)
+	}
+	defer closeOnError(img)
+
+	return newBootFilesFromImage(img)
 }
 
 func findExecutable() (string, error) {
