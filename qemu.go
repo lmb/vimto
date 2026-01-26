@@ -252,6 +252,25 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		return strings.HasPrefix(env, "TMPDIR=")
 	})
 
+	// Resolve symlinks in PATH entries and warn about opaque directories
+	for i, e := range env {
+		if key, value, ok := strings.Cut(e, "="); ok && key == "PATH" {
+			parts := filepath.SplitList(value)
+			for j, p := range parts {
+				resolved := resolvePath(p)
+				parts[j] = resolved
+				// Warn if resolved path still under opaque directory
+				for _, opaque := range opaqueDirectories {
+					if resolved == opaque || strings.HasPrefix(resolved, opaque+"/") {
+						fmt.Fprintf(os.Stderr, "warning: PATH entry %q resolves to %q which is shadowed in the VM\n", p, resolved)
+						break
+					}
+				}
+			}
+			env[i] = "PATH=" + strings.Join(parts, string(filepath.ListSeparator))
+		}
+	}
+
 	execCmd := execCommand{
 		cmd.Path,
 		cmd.Args,
@@ -718,6 +737,50 @@ func (p9sd *p9SharedDirectory) Cmdline() []string {
 
 func (*p9SharedDirectory) KArgs() []string {
 	return nil
+}
+
+// resolvePath resolves symlinks in a path segment by segment.
+// Returns original path if resolution fails at any point.
+func resolvePath(path string) string {
+	if path == "" {
+		return path
+	}
+
+	var resolved string
+	if filepath.IsAbs(path) {
+		resolved = "/"
+	}
+
+	segments := strings.Split(path, string(filepath.Separator))
+	for _, seg := range segments {
+		if seg == "" {
+			continue
+		}
+
+		current := filepath.Join(resolved, seg)
+		info, err := os.Lstat(current)
+		if err != nil {
+			// Path doesn't exist or can't be accessed, return original
+			return path
+		}
+
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(current)
+			if err != nil {
+				return path
+			}
+
+			if filepath.IsAbs(target) {
+				resolved = target
+			} else {
+				resolved = filepath.Join(resolved, target)
+			}
+		} else {
+			resolved = current
+		}
+	}
+
+	return filepath.Clean(resolved)
 }
 
 // virtioRandom and arbitraryArgs were copied from u-root, available under BSD-3-Clause.
