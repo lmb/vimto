@@ -1,0 +1,24 @@
+# Test PATH symlink resolution
+#
+# On NixOS, PATH contains entries like /run/current-system/sw/bin which are
+# symlinks into /nix/store. Since /run is made opaque in the VM, we resolve
+# symlinks in PATH entries before passing them to the guest.
+#
+# This test verifies symlink resolution works. Since $WORK is under /tmp
+# (an opaque directory), we expect a warning but the resolution should
+# still transform link-dir -> real-dir in the PATH.
+
+config kernel="${KERNEL}"
+
+# Create target directory and symlink to it
+mkdir real-dir
+symlink link-dir -> real-dir
+
+# Set PATH through the symlink
+env PATH=$PATH:$WORK/link-dir
+
+# Verify PATH inside VM contains resolved path, not symlink
+vimto exec -- sh -c 'echo $PATH'
+stderr 'warning: PATH entry'
+stdout real-dir
+! stdout link-dir

@@ -43,8 +43,6 @@ func TestExecutable(t *testing.T) {
 		t.Fatal("Failed to compile binary:", err)
 	}
 
-	t.Setenv("PATH", fmt.Sprintf("%s:%s", path, os.Getenv("PATH")))
-
 	e := script.NewEngine()
 	e.Cmds["glob-exists"] = globExists
 	e.Cmds["gdb"] = gdbStub
@@ -61,7 +59,7 @@ func TestExecutable(t *testing.T) {
 		s.Setenv("TMPDIR", t.TempDir())
 		return nil, nil
 	})
-	e.Cmds["vimto"] = script.Program("vimto", nil, time.Second)
+	e.Cmds["vimto"] = script.Program(filepath.Join(path, "vimto"), nil, time.Second)
 	e.Cmds["config"] = script.Command(script.CmdUsage{
 		Summary: "Write to the configuration file",
 		Args:    "items...",
