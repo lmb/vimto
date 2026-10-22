@@ -43,6 +43,9 @@ type command struct {
 	// Enabled the GDB server on the specified address. The VM will be
 	// paused on startup and wait for a "continue" from a gdb client.
 	GDB string
+	// Console receives a live copy of the guest's console output. Optional,
+	// mainly useful to debug boot problems.
+	Console io.Writer
 	// Path to the binary to execute.
 	Path string
 	// Arguments passed to the binary. The first element is conventionally Path.
@@ -337,7 +340,12 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	cmd.tasks.Go(func() error {
 		defer consoleHost.Close()
 
-		_, err = io.Copy(&cmd.console, consoleHost)
+		var console io.Writer = &cmd.console
+		if cmd.Console != nil {
+			console = io.MultiWriter(console, cmd.Console)
+		}
+
+		_, err = io.Copy(console, consoleHost)
 		return err
 	})
 

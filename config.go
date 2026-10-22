@@ -20,6 +20,7 @@ type config struct {
 	SMP      string          `toml:"smp"`
 	User     string          `toml:"user"`
 	GDB      string          `toml:"-"`
+	Console  bool            `toml:"-"`
 	Setup    []configCommand `toml:"setup"`
 	Teardown []configCommand `toml:"teardown"`
 }
@@ -120,6 +121,14 @@ func configFlags(name string, cfg *config) *flag.FlagSet {
 		}
 
 		cfg.GDB = "localhost:1234"
+		return nil
+	})
+	fs.BoolFunc("console", "stream the guest's console to stderr", func(s string) error {
+		if s != "true" {
+			return errors.New("flag only accepts true")
+		}
+
+		cfg.Console = true
 		return nil
 	})
 

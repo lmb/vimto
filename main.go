@@ -241,6 +241,10 @@ func execCmd(cfg *config, args []string) error {
 		SharedDirectories: slices.Compact(sharedDirectories),
 	}
 
+	if cfg.Console {
+		cmd.Console = os.Stderr
+	}
+
 	if err := cmd.Start(ctx); err != nil {
 		return err
 	}

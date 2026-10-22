@@ -14,7 +14,7 @@ import (
 func TestParseConfigFromTOML(t *testing.T) {
 	tmp := t.TempDir()
 
-	want := &config{"A", "B", "C", "", "", nil, nil}
+	want := &config{"A", "B", "C", "", "", false, nil, nil}
 
 	have := *want
 	qt.Assert(t, qt.IsNil(parseConfigFromTOML(tmp, &have)))
