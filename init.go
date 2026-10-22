@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jsimonetti/rtnetlink/v2/rtnl"
 	"golang.org/x/sys/unix"
 )
 
@@ -269,7 +271,7 @@ func minimalInit(sys syscaller, args []string) error {
 			}
 		}
 
-		if err := executeSimpleCommands([]configCommand{{"ip", "link", "set", "dev", "lo", "up"}}, cmd.Dir, cmd.Env); err != nil {
+		if err := setupLoopback(); err != nil {
 			fmt.Fprintln(os.Stderr, "Set up lo:", err)
 		}
 
@@ -341,6 +343,22 @@ func minimalInit(sys syscaller, args []string) error {
 
 	sys.sync()
 	return sys.reboot(unix.LINUX_REBOOT_CMD_POWER_OFF)
+}
+
+// setupLoopback brings up the loopback interface.
+func setupLoopback() error {
+	conn, err := rtnl.Dial(nil)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	lo, err := net.InterfaceByName("lo")
+	if err != nil {
+		return err
+	}
+
+	return conn.LinkUp(lo)
 }
 
 func executeSimpleCommands(cmds []configCommand, dir string, env []string) error {
