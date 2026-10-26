@@ -2,10 +2,17 @@ mkdir ./kernel/boot
 cp ${KERNEL} ./kernel/boot/
 config kernel="./kernel"
 
-# Booting via a kernel image or directory adds additonal files as an overlay.
+# Files from a kernel image or directory are merged over the base.
 vimto exec /bin/cat /vimto-test
 stdout ^IRnRnZPbNY$
 
+# Modules are bound to a fixed location, regardless of their location in the image.
+vimto exec /bin/cat /lib/modules/1.0.0/vimto-test
+stdout ^IRnRnZPbNY$
+
 -- kernel/vimto-test --
+
+IRnRnZPbNY
+-- kernel/usr/lib/modules/1.0.0/vimto-test --
 
 IRnRnZPbNY

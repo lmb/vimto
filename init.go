@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -20,6 +21,12 @@ import (
 //
 // - cache=mmap: required to avoid mmap returning EINVAL.
 const default9POptions = "version=9p2000.L,trans=virtio,access=any,msize=1048576,cache=mmap"
+
+// Tag of the 9p share containing the guest's base file system.
+const p9BaseTag = "base"
+
+// Tag of the 9p share containing the kernel image's overlay.
+const p9KernelTag = "kernel"
 
 type syscaller interface {
 	mount(*mountPoint) error
@@ -59,6 +66,7 @@ func mount(source, target, fstype string, flags uintptr, data string) error {
 }
 
 func mountOverlay(target, upperdir, workdir string, lowerdirs []string) error {
+	slices.Reverse(lowerdirs)
 	var options strings.Builder
 	fmt.Fprintf(&options, "upperdir=%s,workdir=%s,", upperdir, workdir)
 	options.WriteString("lowerdir=")
@@ -183,12 +191,12 @@ func minimalInit(sys syscaller, args []string) error {
 			return fmt.Errorf("expected two arguments, got %q", args)
 		}
 
+		stdioPort := args[0]
+		controlPort := args[1]
+
 		if err := prepareRoot(); err != nil {
 			return err
 		}
-
-		stdioPort := args[0]
-		controlPort := args[1]
 
 		ignored, err := earlyMounts.mountAll(sys)
 		if err != nil {
@@ -228,14 +236,10 @@ func minimalInit(sys syscaller, args []string) error {
 			path = filepath.Clean(path)
 			fmt.Println("Mounting", path)
 
-			for _, opaque := range opaqueDirectories {
-				if strings.HasPrefix(path, opaque) {
-					if err := os.MkdirAll(path, 0755); err != nil {
-						return fmt.Errorf("mount %q: %w", path, err)
-					}
-
-					break
-				}
+			// The mountpoint may not exist, e.g. below an opaque directory or
+			// when a userland replaced the root filesystem.
+			if err := os.MkdirAll(path, 0755); err != nil {
+				return fmt.Errorf("mount %q: %w", path, err)
 			}
 
 			// TODO: Investigate dfltuid, dfltgid, noxattr options.
@@ -250,6 +254,10 @@ func minimalInit(sys syscaller, args []string) error {
 				return fmt.Errorf("mount %q: %w", path, err)
 			}
 		}
+
+		// A userland may contain binaries in directories which are not part of
+		// the host's PATH, e.g. /bin on hosts where it is a symlink into /usr.
+		cmd.Env = ensurePathBinDirs(cmd.Env)
 
 		// Setup environment variables.
 		for _, env := range cmd.Env {
@@ -345,6 +353,40 @@ func minimalInit(sys syscaller, args []string) error {
 	return sys.reboot(unix.LINUX_REBOOT_CMD_POWER_OFF)
 }
 
+// Standard locations for binaries according to the FHS.
+var binDirs = []string{
+	"/usr/local/sbin",
+	"/usr/local/bin",
+	"/usr/sbin",
+	"/usr/bin",
+	"/sbin",
+	"/bin",
+}
+
+// ensurePathBinDirs appends standard binary directories to PATH entries in env if
+// they are missing.
+func ensurePathBinDirs(env []string) []string {
+	for i, kv := range env {
+		key, value, _ := strings.Cut(kv, "=")
+		if key != "PATH" {
+			continue
+		}
+
+		var dirs []string
+		if value != "" {
+			dirs = strings.Split(value, string(filepath.ListSeparator))
+		}
+		for _, dir := range binDirs {
+			if !slices.Contains(dirs, dir) {
+				dirs = append(dirs, dir)
+			}
+		}
+
+		env[i] = "PATH=" + strings.Join(dirs, string(filepath.ListSeparator))
+	}
+	return env
+}
+
 // setupLoopback brings up the loopback interface.
 func setupLoopback() error {
 	conn, err := rtnl.Dial(nil)
@@ -382,15 +424,16 @@ func executeSimpleCommands(cmds []configCommand, dir string, env []string) error
 
 func prepareRoot() error {
 	const (
-		hostDir    = "/host"
-		overlayDir = "/overlay"
+		oldRootDir = "/oldroot"
+		baseDir    = "/base"
+		kernelDir  = "/kernel"
 		upperDir   = "/upper"
 		workDir    = "/work"
 		mergedDir  = "/merged"
 	)
 
 	// The current mount table looks something like this:
-	//    /    9pfs     mount of host
+	//    /    9pfs     mount of the host's root
 	//    /dev devtmpfs (automounted)
 
 	// Remove unnecessary /dev, we're going to mount our own later on.
@@ -408,22 +451,24 @@ func prepareRoot() error {
 	}
 
 	// Create mountpoints in our own tmpfs.
-	for _, dir := range []string{hostDir, overlayDir, upperDir, workDir, mergedDir} {
+	for _, dir := range []string{oldRootDir, baseDir, kernelDir, upperDir, workDir, mergedDir} {
 		if err := os.Mkdir(filepath.Join("/tmp", dir), 0755); err != nil {
 			return err
 		}
 	}
 
-	// Switch the root to the tmpfs.
-	if err := unix.PivotRoot("/tmp", filepath.Join("/tmp", hostDir)); err != nil {
+	// Switch the root to the tmpfs. The old root only serves to keep the init
+	// binary alive.
+	if err := unix.PivotRoot("/tmp", filepath.Join("/tmp", oldRootDir)); err != nil {
 		return fmt.Errorf("pivot root: %w", err)
 	}
 
 	// The mount table is now:
 	//    /         tmpfs
-	//    /host     9pfs
+	//    /oldroot  9pfs
 
-	// Remove access to some temporary directories on the host root fs.
+	// Remove access to some temporary directories in case host root is mounted
+	// as base dir.
 	//
 	// See https://docs.kernel.org/filesystems/overlayfs.html#whiteouts-and-opaque-directories
 	for _, opaque := range opaqueDirectories {
@@ -437,37 +482,61 @@ func prepareRoot() error {
 		}
 	}
 
+	// The base of the guest's file system. The host decides whether this is
+	// its own root or a userland image, the guest doesn't care.
+	if err := mount(p9BaseTag, baseDir, "9p", unix.MS_RDONLY, default9POptions); err != nil {
+		return fmt.Errorf("mount base: %w", err)
+	}
+
 	// Constituent parts of the merged filesystem.
 	//
-	// Directories with lower indices take precedence.
-	var lowerDirs []string
+	// Directories with lower indices sit lower in the stack of layers.
+	lowerDirs := []string{baseDir}
 
-	// Optionally mount an overlay for the root filesystem.
-	err := mount(p9OverlayTag, overlayDir, "9p", unix.MS_RDONLY, default9POptions)
+	// Optionally mount the kernel image and merge it over the base.
+	err := mount(p9KernelTag, kernelDir, "9p", unix.MS_RDONLY, default9POptions)
 	if err != nil {
 		if !errors.Is(err, unix.ENOENT) {
-			return fmt.Errorf("mount overlay: %w", err)
+			return fmt.Errorf("mount kernel image: %w", err)
 		}
 
-		fmt.Fprintln(os.Stderr, "Not mounting overlay:", err)
+		fmt.Fprintln(os.Stderr, "No kernel image provided:", err)
 	} else {
-		lowerDirs = append(lowerDirs, overlayDir)
-
-		if err := checkHostShadowing(hostDir, overlayDir); err != nil {
+		if err := checkLayerShadowing(baseDir, kernelDir); err != nil {
 			return err
 		}
+
+		lowerDirs = append(lowerDirs, kernelDir)
 	}
 
 	// Mount the overlayfs which we'll use as the root.
-	lowerDirs = append(lowerDirs, hostDir)
 	if err := mountOverlay(mergedDir, upperDir, workDir, lowerDirs); err != nil {
 		return fmt.Errorf("mount root overlay: %w", err)
 	}
 
+	// Detect the kernel image's module path and bind-mount it at /lib/modules.
+	// The mount operation will follow any symlinks present in the merged dir,
+	// so will account for usrmerged base images automatically.
+	if modules := findModules(kernelDir); modules != "" {
+		// Bind the modules to the conventional location so that tools like
+		// modprobe work regardless of the base's layout.
+		dst := filepath.Join(mergedDir, "lib", "modules")
+		if err := os.MkdirAll(dst, 0755); err != nil {
+			return err
+		}
+
+		if err := mount(modules, dst, "", unix.MS_BIND, ""); err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "No modules in kernel image")
+	}
+
 	// The mount table is now:
 	//    /        tmpfs
-	//    /host    9pfs
-	//    /overlay 9pfs
+	//    /oldroot 9pfs
+	//    /base    9pfs
+	//    /kernel  9pfs (optional)
 	//    /merged  overlayfs
 
 	if err := os.Chdir(mergedDir); err != nil {
@@ -481,7 +550,7 @@ func prepareRoot() error {
 
 	// The mount table is now:
 	//    /        overlayfs
-	//    /host    9pfs              (shadowed by /)
+	//    /oldroot 9pfs              (shadowed by /)
 
 	if err := unix.Chroot("."); err != nil {
 		return fmt.Errorf("chroot: %w", err)
@@ -498,41 +567,40 @@ func prepareRoot() error {
 	return nil
 }
 
-var errShadowedDirectory = errors.New("shadows symlink on host")
-
-// checkHostShadowing ensures that some important directories in the host aren't
-// shadowed by the overlay.
-//
-// For example, a /lib directory in the overlay will shadow a /lib symlink on
-// the host mount since overlay fs only ever merges two directories, not a
-// directory and a symlink.
-func checkHostShadowing(host, overlay string) error {
-	dirs := []string{
-		"/lib", "/lib64",
-		"/bin", "/sbin",
+func findModules(root string) string {
+	for _, dir := range []string{"lib/modules", "usr/lib/modules"} {
+		if m, err := filepath.EvalSymlinks(filepath.Join(root, dir)); err == nil {
+			return m
+		}
 	}
+	return ""
+}
 
-	for _, dir := range dirs {
-		ovlInfo, err := os.Lstat(filepath.Join(overlay, dir))
+var errShadowedPath = errors.New("path would be shadowed by incoming layer")
+
+// checkLayerShadowing ensures that paths a and b don't shadow any important
+// paths in each other.
+//
+// Overlayfs only merges directories, never a directory and a symlink. A
+// directory in a kernel image shadows a symlink in a base image and vice versa.
+func checkLayerShadowing(a, b string) error {
+	for _, dir := range []string{"/lib", "/lib64", "/bin", "/sbin"} {
+		aInfo, err := os.Lstat(filepath.Join(a, dir))
 		if errors.Is(err, os.ErrNotExist) {
 			continue
-		}
-		if err != nil {
+		} else if err != nil {
 			return err
-		}
-		if !ovlInfo.IsDir() {
-			continue
 		}
 
-		hostInfo, err := os.Lstat(filepath.Join(host, dir))
+		bInfo, err := os.Lstat(filepath.Join(b, dir))
 		if errors.Is(err, os.ErrNotExist) {
 			continue
-		}
-		if err != nil {
+		} else if err != nil {
 			return err
 		}
-		if hostInfo.Mode().Type() == os.ModeSymlink {
-			return fmt.Errorf("directory %s: %w", dir, errShadowedDirectory)
+
+		if aInfo.IsDir() != bInfo.IsDir() {
+			return fmt.Errorf("%s shadows %s in %s: %w", b, dir, a, errShadowedPath)
 		}
 	}
 
@@ -563,25 +631,6 @@ func readVirtioPorts() (map[string]string, error) {
 	}
 
 	return ports, nil
-}
-
-func read9PMountTags() ([]string, error) {
-	files, err := filepath.Glob("/sys/bus/virtio/drivers/9pnet_virtio/virtio*/mount_tag")
-	if err != nil {
-		return nil, err
-	}
-
-	var tags []string
-	for _, file := range files {
-		rawTag, err := os.ReadFile(file)
-		if err != nil {
-			return nil, err
-		}
-
-		tags = append(tags, unix.ByteSliceToString(rawTag))
-	}
-
-	return tags, nil
 }
 
 func writeSysctl(name, value string) error {

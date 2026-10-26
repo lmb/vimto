@@ -229,7 +229,7 @@ func execCmd(cfg *config, args []string) error {
 		Stdin:       os.Stdin,
 		Stdout:      os.Stdout,
 		Stderr:      os.Stderr,
-		RootOverlay: bf.Overlay,
+		KernelImage: bf.Overlay,
 		Sysctls: []sysctl{
 			{"kernel.core_pattern", filepath.Join(wd, corePrefix+"%e.%p.%t")},
 		},

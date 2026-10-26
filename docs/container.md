@@ -7,22 +7,14 @@ The container must contain one of these files in order to boot the VM.
 
 The first existing file is used.
 
-Other files and directories in the container are merged with the host filesystem
-using an overlayfs mount inside the VM.
+Modules at `/lib/modules` or `/usr/lib/modules` in the container are bind
+mounted to `/lib/modules` in the guest, so that tools like `modprobe` work
+regardless of the layout of the guest's root file system. All other files and
+directories in the container are merged over the guest's root file system using
+overlayfs.
 
-## Error: directory /lib: shadows symlink on host
-
-This error is generated if the image contains a directory that would shadow
-important directories in the host:
-
-* /lib
-* /lib64
-* /bin
-* /sbin
-
-This happens when running on distributions that have completed a /usr merge. In
-this case these directories are symlinks on the host. Overlaying a directory from
-the image will make the symlink disappear.
-
-To work around the issue, place files in `/usr/lib`, ... and include your own
-`/lib -> /usr/lib` symlink in the image.
+Note: The container should not ship top-level usrmerge symlinks like `lib ->
+usr/lib`: overlayfs doesn't merge a symlink with a directory, so the symlink
+would shadow the contents of the root file system. Place files in `/usr/lib`
+etc. instead. For backwards compatibility, a top-level `lib` symlink is removed
+from pulled kernel images.

@@ -22,8 +22,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const p9OverlayTag = "overlay"
-
 const envDisableKVM = "VIMTO_DISABLE_KVM"
 
 type sysctl struct {
@@ -60,8 +58,13 @@ type command struct {
 	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
-	// A directory to overlay over the root filesystem.
-	RootOverlay string
+
+	// A directory containing the kernel image's contents, made available at
+	// the p9KernelTag share.
+	KernelImage string
+
+	// The guest's base file system. Defaults to the host's root.
+	Base string
 
 	// Sysctls set before the program is executed.
 	Sysctls []sysctl
@@ -206,20 +209,35 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		})
 	}
 
-	var rootOverlay string
-	if cmd.RootOverlay != "" {
-		rootOverlay, err = filepath.Abs(cmd.RootOverlay)
+	if cmd.KernelImage != "" {
+		kernelImage, err := filepath.Abs(cmd.KernelImage)
 		if err != nil {
 			return err
 		}
 
 		devices = append(devices, &p9SharedDirectory{
-			fsdev(p9OverlayTag),
-			p9OverlayTag,
-			rootOverlay,
+			fsdev(p9KernelTag),
+			p9KernelTag,
+			kernelImage,
 			true,
 		})
 	}
+
+	base := cmd.Base
+	if base == "" {
+		base = "/"
+	}
+	base, err = filepath.Abs(base)
+	if err != nil {
+		return err
+	}
+
+	devices = append(devices, &p9SharedDirectory{
+		fsdev(p9BaseTag),
+		p9BaseTag,
+		base,
+		true,
+	})
 
 	if cmd.GDB != "" {
 		devices = append(devices, gdbServer{cmd.GDB})
