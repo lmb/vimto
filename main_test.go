@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -106,7 +107,7 @@ var fetchKernelImage = sync.OnceValues(func() (*bootFiles, error) {
 		return nil, err
 	}
 
-	img, err := cache.Acquire(context.Background(), kernelImage(), io.Discard)
+	img, err := cache.Acquire(context.Background(), kernelImage(), runtime.GOARCH, io.Discard)
 	if err != nil {
 		return nil, err
 	}

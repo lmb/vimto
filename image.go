@@ -8,8 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
-	"slices"
 	"time"
 
 	"github.com/adrg/xdg"
@@ -43,18 +41,19 @@ func newImageCache() (*imageCache, error) {
 // Acquire an image from the cache.
 //
 // The image remains valid even after closing the cache.
-func (ic *imageCache) Acquire(ctx context.Context, refStr string, status io.Writer) (_ *image, err error) {
+func (ic *imageCache) Acquire(ctx context.Context, refStr, arch string, status io.Writer) (_ *image, err error) {
 	ref, err := name.ParseReference(refStr)
 	if err != nil {
 		return nil, fmt.Errorf("parsing reference %q: %w", refStr, err)
 	}
 
-	// Use the sha256 of the canonical reference as the cache key. This means
-	// that images / tags pointing at the blob will have separate cache entries.
-	dir := fmt.Sprintf("%x", sha256.Sum256([]byte(ref.Name())))
+	// Use the sha256 of the canonical reference and the architecture as the
+	// cache key. This means that images / tags pointing at the blob will have
+	// separate cache entries.
+	dir := fmt.Sprintf("%x", sha256.Sum256([]byte(ref.Name()+arch)))
 
 	lock, path, err := populateDirectoryOnce(filepath.Join(ic.baseDir, dir), func(path string) error {
-		err := fetchImage(ctx, refStr, path, status)
+		err := fetchImage(ctx, refStr, arch, path, status)
 		if err != nil {
 			return fmt.Errorf("fetch image: %w", err)
 		}
@@ -190,15 +189,17 @@ func newBootFilesFromImage(img *image) (*bootFiles, error) {
 	return bf, nil
 }
 
-var remoteOptions = []remote.Option{
-	remote.WithUserAgent("vimto"),
-	remote.WithPlatform(v1.Platform{
-		OS:           "linux",
-		Architecture: runtime.GOARCH,
-	}),
+func remoteOptions(arch string) []remote.Option {
+	return []remote.Option{
+		remote.WithUserAgent("vimto"),
+		remote.WithPlatform(v1.Platform{
+			OS:           "linux",
+			Architecture: arch,
+		}),
+	}
 }
 
-func fetchImage(ctx context.Context, refStr, dst string, status io.Writer) error {
+func fetchImage(ctx context.Context, refStr, arch, dst string, status io.Writer) error {
 	ref, err := name.ParseReference(refStr)
 	if err != nil {
 		return fmt.Errorf("parsing reference %q: %w", refStr, err)
@@ -206,7 +207,7 @@ func fetchImage(ctx context.Context, refStr, dst string, status io.Writer) error
 
 	bar := progressbar.NewOptions64(
 		-1,
-		progressbar.OptionSetDescription(fmt.Sprintf("Caching %s", ref.Name())),
+		progressbar.OptionSetDescription(fmt.Sprintf("Caching %s (linux/%s)", ref.Name(), arch)),
 		progressbar.OptionSetWriter(status),
 		progressbar.OptionShowBytes(true),
 		progressbar.OptionShowTotalBytes(false),
@@ -219,7 +220,7 @@ func fetchImage(ctx context.Context, refStr, dst string, status io.Writer) error
 	)
 	defer bar.Finish()
 
-	options := append(slices.Clone(remoteOptions),
+	options := append(remoteOptions(arch),
 		remote.WithContext(ctx),
 	)
 
@@ -231,6 +232,17 @@ func fetchImage(ctx context.Context, refStr, dst string, status io.Writer) error
 	image, err := rmt.Image()
 	if err != nil {
 		return err
+	}
+
+	// WithPlatform only takes effect for multi-platform images. A
+	// single-platform image is returned as is, verify what we got.
+	conf, err := image.ConfigFile()
+	if err != nil {
+		return fmt.Errorf("image config: %w", err)
+	}
+
+	if conf.OS != "linux" || conf.Architecture != arch {
+		return fmt.Errorf("image %s is %s/%s, not linux/%s", ref.Name(), conf.OS, conf.Architecture, arch)
 	}
 
 	if err := os.MkdirAll(dst, 0755); err != nil {

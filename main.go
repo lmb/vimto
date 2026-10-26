@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -296,7 +297,7 @@ func findBootFiles(kernel string) (_ *bootFiles, err error) {
 		return nil, fmt.Errorf("image cache: %w", err)
 	}
 
-	img, err := cache.Acquire(context.Background(), kernel, os.Stdout)
+	img, err := cache.Acquire(context.Background(), kernel, runtime.GOARCH, os.Stdout)
 	if err != nil {
 		return nil, fmt.Errorf("retrieve kernel from OCI image: %w", err)
 	}
