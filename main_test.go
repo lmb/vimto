@@ -107,7 +107,7 @@ var fetchKernelImage = sync.OnceValues(func() (*bootFiles, error) {
 		return nil, err
 	}
 
-	img, err := cache.Acquire(context.Background(), kernelImage(), runtime.GOARCH, io.Discard)
+	img, err := cache.Acquire(context.Background(), kernelImage(), runtime.GOARCH, "kernel", io.Discard, stripLibSymlink)
 	if err != nil {
 		return nil, err
 	}

@@ -40,22 +40,30 @@ func newImageCache() (*imageCache, error) {
 
 // Acquire an image from the cache.
 //
+// fixup is applied to the contents after extraction. variant distinguishes
+// cache entries whose contents differ due to fixup.
+//
 // The image remains valid even after closing the cache.
-func (ic *imageCache) Acquire(ctx context.Context, refStr, arch string, status io.Writer) (_ *image, err error) {
+func (ic *imageCache) Acquire(ctx context.Context, refStr, arch, variant string, status io.Writer, fixup func(dir string) error) (_ *image, err error) {
 	ref, err := name.ParseReference(refStr)
 	if err != nil {
 		return nil, fmt.Errorf("parsing reference %q: %w", refStr, err)
 	}
 
-	// Use the sha256 of the canonical reference and the architecture as the
-	// cache key. This means that images / tags pointing at the blob will have
-	// separate cache entries.
-	dir := fmt.Sprintf("%x", sha256.Sum256([]byte(ref.Name()+arch)))
+	// Use the sha256 of the canonical reference, the architecture and the
+	// variant as the cache key. This means that images / tags pointing at the
+	// blob will have separate cache entries.
+	dir := fmt.Sprintf("%x", sha256.Sum256([]byte(ref.Name()+arch+variant)))
 
 	lock, path, err := populateDirectoryOnce(filepath.Join(ic.baseDir, dir), func(path string) error {
-		err := fetchImage(ctx, refStr, arch, path, status)
-		if err != nil {
+		if err := fetchImage(ctx, refStr, arch, path, status); err != nil {
 			return fmt.Errorf("fetch image: %w", err)
+		}
+
+		if fixup != nil {
+			if err := fixup(path); err != nil {
+				return fmt.Errorf("fix up image: %w", err)
+			}
 		}
 
 		return nil

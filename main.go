@@ -297,13 +297,36 @@ func findBootFiles(kernel string) (_ *bootFiles, err error) {
 		return nil, fmt.Errorf("image cache: %w", err)
 	}
 
-	img, err := cache.Acquire(context.Background(), kernel, runtime.GOARCH, os.Stdout)
+	img, err := cache.Acquire(context.Background(), kernel, runtime.GOARCH, "kernel", os.Stdout, stripLibSymlink)
 	if err != nil {
 		return nil, fmt.Errorf("retrieve kernel from OCI image: %w", err)
 	}
 	defer closeOnError(img)
 
 	return newBootFilesFromImage(img)
+}
+
+// stripLibSymlink removes a top-level lib symlink from an extracted kernel
+// image.
+//
+// Legacy kernel images contain a lib -> usr/lib symlink to match usrmerged
+// hosts. Merging it over a base with a real /lib would shadow the directory.
+// The modules remain reachable via usr/lib/modules.
+func stripLibSymlink(dir string) error {
+	path := filepath.Join(dir, "lib")
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	if info.Mode().Type() != os.ModeSymlink {
+		return nil
+	}
+
+	return os.Remove(path)
 }
 
 func findExecutable() (string, error) {
