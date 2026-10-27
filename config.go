@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
-	"github.com/kballard/go-shellquote"
 )
 
 type config struct {
@@ -23,22 +22,6 @@ type config struct {
 	Console  bool            `toml:"-"`
 	Setup    []configCommand `toml:"setup"`
 	Teardown []configCommand `toml:"teardown"`
-}
-
-type configCommand []string
-
-func (cc *configCommand) UnmarshalText(text []byte) error {
-	words, err := shellquote.Split(string(text))
-	if err != nil {
-		return err
-	}
-
-	*cc = configCommand(words)
-	return nil
-}
-
-func (cc *configCommand) MarshalText() ([]byte, error) {
-	return []byte(shellquote.Join(*cc...)), nil
 }
 
 var defaultConfig = &config{

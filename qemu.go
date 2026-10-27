@@ -24,11 +24,6 @@ import (
 
 const envDisableKVM = "VIMTO_DISABLE_KVM"
 
-type sysctl struct {
-	Name  string
-	Value string
-}
-
 // command is a binary to be executed under a different kernel.
 //
 // Mirrors exec.Cmd.
@@ -420,34 +415,6 @@ func (s controlCodeStripper) Read(buf []byte) (int, error) {
 	n, err := s.Reader.Read(buf)
 	n = copy(buf, seBIOSEscapeCodes.ReplaceAll(buf[:n], nil))
 	return n, err
-}
-
-type execCommand struct {
-	Path            string
-	Args            []string
-	Dir             string
-	Uid, Gid        int
-	Env             []string
-	Sysctls         []sysctl
-	Rlimits         map[int]unix.Rlimit
-	Setup, Teardown []configCommand
-	MountTags       map[string]string // map[tag]path
-}
-
-type guestExitError struct {
-	ExitCode int
-}
-
-func (gee *guestExitError) Error() string {
-	return fmt.Sprintf("guest: exit %d", gee.ExitCode)
-}
-
-type genericGuestError struct {
-	Message string
-}
-
-func (gge *genericGuestError) Error() string {
-	return fmt.Sprintf("guest: %s", gge.Message)
 }
 
 type device interface {
