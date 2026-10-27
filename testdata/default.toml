@@ -1,5 +1,6 @@
 kernel = ""
 userland = ""
+volumes = []
 memory = "size=128M"
 smp = "cpus=1"
 user = ""

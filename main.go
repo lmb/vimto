@@ -221,23 +221,48 @@ func execCmd(cfg *config, args []string) error {
 	defer cancel()
 
 	// Ensure that the repository root is available in the VM.
-	var sharedDirectories []string
-	if repo, err := findGitRoot("."); err != nil {
-		return err
-	} else if repo != "" {
-		sharedDirectories = append(sharedDirectories, repo)
+	var sharedDirectories []volume
+	addShare := func(sd volume) {
+		if !slices.Contains(sharedDirectories, sd) {
+			sharedDirectories = append(sharedDirectories, sd)
+		}
 	}
 
-	// Ensure that the binary is available in the VM.
+	repo, err := findGitRoot(".")
+	if err != nil {
+		return err
+	}
+	if repo != "" {
+		addShare(volume{repo, repo})
+	}
+
+	// Ensure that the binary is available in the VM. Mainly used for Go test
+	// binaries specified as `/tmp/go-build*/pkg.test`. Bare commands are
+	// resolved via PATH in the guest instead.
 	path := fs.Arg(0)
-	sharedDirectories = append(sharedDirectories, filepath.Dir(path))
+	if strings.ContainsRune(path, os.PathSeparator) {
+		binDir, err := filepath.Abs(filepath.Dir(path))
+		if err != nil {
+			return err
+		}
+		addShare(volume{binDir, binDir})
+	}
 
 	// Ensure that the working directory is available.
 	wd, err := os.Getwd()
 	if err != nil {
 		return err
 	}
-	sharedDirectories = append(sharedDirectories, wd)
+	addShare(volume{wd, wd})
+
+	// Expose host directories specified by the user.
+	for _, v := range cfg.Volumes {
+		sd, err := parseVolume(v)
+		if err != nil {
+			return err
+		}
+		addShare(sd)
+	}
 
 	tmp := make([]byte, 2)
 	rand.Read(tmp)
@@ -265,7 +290,7 @@ func execCmd(cfg *config, args []string) error {
 		},
 		Setup:             cfg.Setup,
 		Teardown:          cfg.Teardown,
-		SharedDirectories: slices.Compact(sharedDirectories),
+		SharedDirectories: sharedDirectories,
 	}
 
 	if cfg.Console {
@@ -375,6 +400,31 @@ func findUserland(userland, arch string) (string, *image, error) {
 	}
 
 	return userland, nil, nil
+}
+
+// parseVolume parses a Docker-style volume mapping.
+//
+// A single path is made available at the same location in the guest.
+func parseVolume(v string) (volume, error) {
+	host, guest, found := strings.Cut(v, ":")
+	if !found {
+		guest = host
+	}
+
+	if host == "" || guest == "" {
+		return volume{}, fmt.Errorf("invalid volume %q", v)
+	}
+
+	if !filepath.IsAbs(guest) {
+		return volume{}, fmt.Errorf("volume %q: guest path must be absolute", v)
+	}
+
+	host, err := filepath.Abs(host)
+	if err != nil {
+		return volume{}, err
+	}
+
+	return volume{host, guest}, nil
 }
 
 // stripLibSymlink removes a top-level lib symlink from an extracted kernel

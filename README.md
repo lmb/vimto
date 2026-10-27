@@ -51,6 +51,25 @@ OCI image or a local directory as the guest's root instead:
 vimto -userland alpine -- go test .
 ```
 
+## Directory Sharing
+
+`vimto` maps the current Git repository as well as the working directory of the
+calling process into the guest automatically:
+
+```
+sd-9p-0 on /home/timo/vimto type 9p (<opts>)
+sd-9p-1 on /home/timo/vimto/docs type 9p (<opts>)
+```
+
+Additional host directories can be shared with the guest using Docker-style
+mappings:
+
+```shell
+vimto -volume /host/path:/guest/path -- go test .
+```
+
+If the guest path is omitted, the host path is mapped into the guest verbatim.
+
 ## Currently not supported
 
 * Networking

@@ -16,6 +16,7 @@ import (
 type config struct {
 	Kernel   string          `toml:"kernel"`
 	Userland string          `toml:"userland"`
+	Volumes  []string        `toml:"volumes"`
 	Memory   string          `toml:"memory"`
 	SMP      string          `toml:"smp"`
 	User     string          `toml:"user"`
@@ -26,6 +27,7 @@ type config struct {
 }
 
 var defaultConfig = &config{
+	Volumes:  []string{},
 	Memory:   "size=128M",
 	SMP:      "cpus=1",
 	Setup:    []configCommand{},
@@ -85,6 +87,10 @@ func configFlags(name string, cfg *config) *flag.FlagSet {
 	})
 	fs.Func("userland", "`path or url` of an OCI image containing the guest's userland, for example 'alpine:latest'", func(s string) error {
 		cfg.Userland = s
+		return nil
+	})
+	fs.Func("volume", "`host:guest` mapping of a directory shared with the VM (repeatable)", func(s string) error {
+		cfg.Volumes = append(cfg.Volumes, s)
 		return nil
 	})
 	fs.Func("memory", "memory to give to the VM", func(s string) error {

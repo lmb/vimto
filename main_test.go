@@ -93,6 +93,31 @@ func TestExecutable(t *testing.T) {
 	scripttest.Test(t, context.Background(), e, env, "testdata/*.txt")
 }
 
+func TestParseVolume(t *testing.T) {
+	for _, tc := range []struct {
+		volume string
+		want   volume
+	}{
+		{"/a", volume{"/a", "/a"}},
+		{"/a:/b", volume{"/a", "/b"}},
+	} {
+		have, err := parseVolume(tc.volume)
+		qt.Assert(t, qt.IsNil(err))
+		qt.Assert(t, qt.Equals(have, tc.want), qt.Commentf(tc.volume))
+	}
+
+	for _, volume := range []string{"", ":/b", "/a:", "/a:b"} {
+		_, err := parseVolume(volume)
+		qt.Assert(t, qt.IsNotNil(err), qt.Commentf(volume))
+	}
+
+	// Relative host paths.
+	have, err := parseVolume("a:/b")
+	qt.Assert(t, qt.IsNil(err))
+	qt.Assert(t, qt.IsTrue(filepath.IsAbs(have.Host)))
+	qt.Assert(t, qt.Equals(have.Guest, "/b"))
+}
+
 func kernelImage() string {
 	image := os.Getenv("CI_KERNEL")
 	if image == "" {
