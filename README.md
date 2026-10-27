@@ -70,11 +70,23 @@ vimto -volume /host/path:/guest/path -- go test .
 
 If the guest path is omitted, the host path is mapped into the guest verbatim.
 
+## Cross-architecture tests
+
+`vimto` honours the `GOARCH` environment variable and boots a guest of a matching
+architecture, using emulation if necessary:
+
+```shell
+GOARCH=arm64 vimto -userland alpine -- go test .
+```
+
+This requires the appropriate `qemu-system-*` binary on the host and uses TCG
+instead of KVM, which is significantly slower. The host's binaries can't be
+executed by a foreign-architecture guest, so `-userland` is required.
+
 ## Currently not supported
 
 * Networking
 * Interactive shell sessions
-* Cross-arch tests (running `arm64` on `amd64` host for example)
 
 ## Requirements
 

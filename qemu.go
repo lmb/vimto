@@ -35,6 +35,9 @@ type volume struct {
 // Mirrors exec.Cmd.
 type command struct {
 	Kernel string
+	// Architecture of the VM in GOARCH notation. Defaults to runtime.GOARCH,
+	// in which case KVM is available.
+	Arch string
 	// Memory to give to the VM. Passed verbatim as the QEMU -m flag.
 	Memory string
 	// SMP is passed verbatim as the QEMU -smp flag.
@@ -106,9 +109,14 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		return errors.New("qemu: already started")
 	}
 
+	arch := cmd.Arch
+	if arch == "" {
+		arch = runtime.GOARCH
+	}
+
 	fds := &fdSets{}
 	cds := &chardevs{}
-	ports := &serialPorts{}
+	ports := &serialPorts{tty: guestTTY(arch)}
 	virtioPorts := &virtioSerialPorts{make(map[chardev]string)}
 
 	// The first serial port is always console, earlyprintk and SeaBIOS (on amd64)
@@ -137,7 +145,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	// subprocesses with this port as stdin, stdout and stderr.
 	virtioPorts.Chardevs[chardev("stdio")] = stdioPortName
 
-	init, err := extractVMInit(runtime.GOARCH)
+	init, err := extractVMInit(arch)
 	if err != nil {
 		return fmt.Errorf("extracting init: %w", err)
 	}
@@ -190,6 +198,11 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		}
 	}
 
+	if arch != runtime.GOARCH {
+		// KVM can't virtualise a foreign architecture.
+		disableKVM = true
+	}
+
 	if !disableKVM {
 		devices = append(devices, arbitraryArgs{"-enable-kvm"})
 	} else if cmd.Stderr != nil {
@@ -197,7 +210,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	}
 
 	var binary string
-	switch runtime.GOARCH {
+	switch arch {
 	case "amd64":
 		binary = "qemu-system-x86_64"
 		devices = append(devices, earlyprintkOnSerialPort{consolePort})
@@ -210,7 +223,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		)
 
 	default:
-		return fmt.Errorf("unsupported GOARCH %s", runtime.GOARCH)
+		return fmt.Errorf("unsupported architecture %q", arch)
 	}
 
 	for name, port := range cmd.SerialPorts {
@@ -584,16 +597,13 @@ func (*chardevs) KArgs() []string { return nil }
 //
 // Probably more portable than virtio-serial, but doesn't allow naming.
 type serialPorts struct {
+	// Name of the tty devices without an index, e.g. "ttyS" or "ttyAMA".
+	tty      string
 	Chardevs []chardev
 }
 
 func (ports *serialPorts) add(cd chardev) string {
-	pattern := "ttyS%d"
-	if runtime.GOARCH == "arm64" {
-		pattern = "ttyAMA%d"
-	}
-
-	port := fmt.Sprintf(pattern, len(ports.Chardevs))
+	port := fmt.Sprintf("%s%d", ports.tty, len(ports.Chardevs))
 	ports.Chardevs = append(ports.Chardevs, cd)
 	return port
 }
@@ -727,6 +737,16 @@ func (gdbServer) KArgs() []string {
 }
 
 type fsdev string
+
+// guestTTY returns the name of the guest's serial port ttys for an
+// architecture, without an index.
+func guestTTY(arch string) string {
+	if arch == "arm64" {
+		// The arm64 virt board only has pl011 UARTs.
+		return "ttyAMA"
+	}
+	return "ttyS"
+}
 
 type p9Root struct {
 	Path string

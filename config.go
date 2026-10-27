@@ -99,7 +99,7 @@ func configFlags(name string, cfg *config) *flag.FlagSet {
 		cfg.Memory = s
 		return nil
 	})
-	fs.Func("smp", "", func(s string) error {
+	fs.Func("smp", "the -smp parameter passed to QEMU to define a CPU topology hierarchy, for example 'cpus=2'", func(s string) error {
 		cfg.SMP = s
 		return nil
 	})
