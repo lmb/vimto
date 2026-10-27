@@ -123,7 +123,7 @@ func goTestCmd(cfg *config, flags []string, goBinary string, goArgs []string) er
 	}
 
 	// Prime the cache before invoking the go binary.
-	bf, err := findBootFiles(cfg.Kernel)
+	bf, err := findBootFiles(cfg.Kernel, runtime.GOARCH)
 	if err != nil {
 		return err
 	}
@@ -170,7 +170,7 @@ func execCmd(cfg *config, args []string) error {
 		return errors.New("binary is not statically linked (did you build with CGO_ENABLED=0?)")
 	}
 
-	bf, err := findBootFiles(cfg.Kernel)
+	bf, err := findBootFiles(cfg.Kernel, runtime.GOARCH)
 	if err != nil {
 		return err
 	}
@@ -189,7 +189,12 @@ func execCmd(cfg *config, args []string) error {
 			}
 			args = append(args, "-ex", fmt.Sprintf("dir %q", bf.Overlay))
 		}
-		fmt.Printf("\tgdb %s %s\n", shellquote.Join(args...), bf.Kernel)
+
+		kernel := bf.Kernel
+		if bf.Symbols != "" {
+			kernel = bf.Symbols
+		}
+		fmt.Printf("\tgdb %s %s\n", shellquote.Join(args...), kernel)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -263,7 +268,23 @@ func execCmd(cfg *config, args []string) error {
 	return waitErr
 }
 
-func findBootFiles(kernel string) (_ *bootFiles, err error) {
+func findBootFiles(kernel, arch string) (_ *bootFiles, err error) {
+	bf, err := resolveBootFiles(kernel, arch)
+	if err != nil {
+		return nil, err
+	}
+
+	// QEMU doesn't validate the kernel format. Booting a kernel binary of the
+	// wrong format can hang the VM without any console output.
+	if err := validateKernel(bf.Kernel, arch); err != nil {
+		bf.Image.Close()
+		return nil, err
+	}
+
+	return bf, nil
+}
+
+func resolveBootFiles(kernel, arch string) (_ *bootFiles, err error) {
 	closeOnError := func(c io.Closer) {
 		if err != nil {
 			c.Close()
@@ -277,7 +298,7 @@ func findBootFiles(kernel string) (_ *bootFiles, err error) {
 	info, err := os.Stat(kernel)
 	if err == nil {
 		if info.IsDir() {
-			return newBootFiles(kernel)
+			return newBootFiles(kernel, arch)
 		}
 
 		// Kernel is a file on disk.
@@ -297,13 +318,13 @@ func findBootFiles(kernel string) (_ *bootFiles, err error) {
 		return nil, fmt.Errorf("image cache: %w", err)
 	}
 
-	img, err := cache.Acquire(context.Background(), kernel, runtime.GOARCH, "kernel", os.Stdout, stripLibSymlink)
+	img, err := cache.Acquire(context.Background(), kernel, arch, "kernel", os.Stdout, stripLibSymlink)
 	if err != nil {
 		return nil, fmt.Errorf("retrieve kernel from OCI image: %w", err)
 	}
 	defer closeOnError(img)
 
-	return newBootFilesFromImage(img)
+	return newBootFilesFromImage(img, arch)
 }
 
 // stripLibSymlink removes a top-level lib symlink from an extracted kernel

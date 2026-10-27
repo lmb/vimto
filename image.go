@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"debug/elf"
 	"errors"
 	"fmt"
 	"io"
@@ -159,6 +160,9 @@ type bootFiles struct {
 	// Path to the kernel to boot.
 	Kernel string
 
+	// Path to an ELF binary with symbols matching Kernel. Optional.
+	Symbols string
+
 	// Path to a directory to be overlaid over the root filesystem. Optional.
 	Overlay string
 
@@ -166,11 +170,26 @@ type bootFiles struct {
 	Image *image
 }
 
-func newBootFiles(path string) (*bootFiles, error) {
-	for _, kernel := range []string{
-		"boot/vmlinux",
-		"boot/vmlinuz",
-	} {
+func newBootFiles(path, arch string) (*bootFiles, error) {
+	const (
+		vmlinux = "boot/vmlinux"
+		vmlinuz = "boot/vmlinuz"
+	)
+	kernels := []string{vmlinux, vmlinuz}
+	if arch == "arm64" {
+		// vmlinux is an ELF with symbols, vmlinuz the arch-specific boot
+		// format. QEMU boots ELF kernels on most architectures: riscv loads
+		// them directly, amd64 uses the PVH entry point. arm64 is different:
+		// vmlinux is linked at virtual addresses (p_paddr == p_vaddr, the
+		// kernel's linker script doesn't use AT()) and QEMU's generic ELF
+		// loader doesn't implement the arm64 boot protocol. The kernel executes
+		// from head.S regardless, but faults as soon as it enables the MMU.
+		kernels = []string{vmlinuz}
+	}
+
+	for _, kernel := range kernels {
+		// Pick the first-found kernel image in the list. Debug images have a
+		// vmlinux with symbols, so prioritize it to make gdb attaches work.
 		kernelPath := filepath.Join(path, kernel)
 		if _, err := os.Stat(kernelPath); errors.Is(err, os.ErrNotExist) {
 			continue
@@ -178,17 +197,27 @@ func newBootFiles(path string) (*bootFiles, error) {
 			return nil, err
 		}
 
-		return &bootFiles{
+		// Debug images contain a vmlinux with debug symbols. Keep a reference
+		// to it even when it isn't bootable, e.g. for use by a debugger.
+		var symbols string
+		if _, err := os.Stat(filepath.Join(path, vmlinux)); err == nil {
+			symbols = vmlinux
+		}
+
+		bf := &bootFiles{
 			Kernel:  kernelPath,
 			Overlay: path,
-		}, nil
+			Symbols: symbols,
+		}
+
+		return bf, nil
 	}
 
 	return nil, fmt.Errorf("no kernel found in %s", path)
 }
 
-func newBootFilesFromImage(img *image) (*bootFiles, error) {
-	bf, err := newBootFiles(img.Directory)
+func newBootFilesFromImage(img *image, arch string) (*bootFiles, error) {
+	bf, err := newBootFiles(img.Directory, arch)
 	if err != nil {
 		return nil, fmt.Errorf("image %s: %w", img.Name, err)
 	}
@@ -274,4 +303,25 @@ func (rp readProxy) Read(p []byte) (int, error) {
 	n, err := rp.Reader.Read(p)
 	rp.ProgressBar.Add(n)
 	return n, err
+}
+
+// validateKernel rejects kernels which QEMU can't boot on the given
+// architecture, typically hanging the VM without any console output.
+func validateKernel(path, arch string) error {
+	ef, err := elf.Open(path)
+	if _, ok := errors.AsType[*elf.FormatError](err); ok {
+		// Not an ELF, assume a native boot format.
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer ef.Close()
+
+	if arch == "arm64" {
+		// QEMU expects bare-metal Images for arm64.
+		return fmt.Errorf("kernel %s: QEMU can't boot an ELF kernel on %s, use the flat Image format", path, arch)
+	}
+
+	return nil
 }

@@ -112,7 +112,7 @@ var fetchKernelImage = sync.OnceValues(func() (*bootFiles, error) {
 		return nil, err
 	}
 
-	return newBootFilesFromImage(img)
+	return newBootFilesFromImage(img, runtime.GOARCH)
 })
 
 // mustFetchKernelImage fetches a kernel image once for the entire lifetime
