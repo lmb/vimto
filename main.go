@@ -129,6 +129,16 @@ func goTestCmd(cfg *config, flags []string, goBinary string, goArgs []string) er
 	}
 	defer bf.Image.Close()
 
+	// Fetch the userland first before invoking go, since it renders animated
+	// output.
+	if cfg.Userland != "" {
+		_, img, err := findUserland(cfg.Userland, runtime.GOARCH)
+		if err != nil {
+			return err
+		}
+		defer img.Close()
+	}
+
 	execArgs := []string{exe}
 	// Retain command line arguments
 	// TODO: Make -kernel parameter absolute?
@@ -175,6 +185,16 @@ func execCmd(cfg *config, args []string) error {
 		return err
 	}
 	defer bf.Image.Close()
+
+	var userland string
+	if cfg.Userland != "" {
+		dir, img, err := findUserland(cfg.Userland, runtime.GOARCH)
+		if err != nil {
+			return err
+		}
+		defer img.Close()
+		userland = dir
+	}
 
 	if cfg.GDB != "" {
 		fmt.Println("Starting GDB server with CPU halted, connect using:")
@@ -236,6 +256,7 @@ func execCmd(cfg *config, args []string) error {
 		Stdout:      os.Stdout,
 		Stderr:      os.Stderr,
 		KernelImage: bf.Overlay,
+		Base:        userland,
 		Sysctls: []sysctl{
 			{"kernel.core_pattern", filepath.Join(wd, corePrefix+"%e.%p.%t")},
 		},
@@ -325,6 +346,35 @@ func resolveBootFiles(kernel, arch string) (_ *bootFiles, err error) {
 	defer closeOnError(img)
 
 	return newBootFilesFromImage(img, arch)
+}
+
+// findUserland locates the directory containing a userland, fetching it from
+// an OCI image if necessary.
+func findUserland(userland, arch string) (string, *image, error) {
+	info, err := os.Stat(userland)
+	if errors.Is(err, os.ErrNotExist) {
+		// Assume that userland is a reference to an image.
+		cache, err := newImageCache()
+		if err != nil {
+			return "", nil, fmt.Errorf("image cache: %w", err)
+		}
+
+		img, err := cache.Acquire(context.Background(), userland, arch, "", os.Stdout, nil)
+		if err != nil {
+			return "", nil, fmt.Errorf("retrieve userland from OCI image: %w", err)
+		}
+
+		return img.Directory, img, nil
+	}
+	if err != nil {
+		return "", nil, err
+	}
+
+	if !info.IsDir() {
+		return "", nil, fmt.Errorf("userland %q is not a directory", userland)
+	}
+
+	return userland, nil, nil
 }
 
 // stripLibSymlink removes a top-level lib symlink from an extracted kernel

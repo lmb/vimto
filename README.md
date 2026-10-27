@@ -42,6 +42,15 @@ CGO_ENABLED=0 go install lmb.io/vimto@latest
 
 All available options and their values are in [testdata/default.toml](./testdata/default.toml).
 
+## Userland
+
+By default, the guest uses the host's root filesystem. Use `-userland` to use an
+OCI image or a local directory as the guest's root instead:
+
+```shell
+vimto -userland alpine -- go test .
+```
+
 ## Currently not supported
 
 * Networking

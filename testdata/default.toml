@@ -1,4 +1,5 @@
 kernel = ""
+userland = ""
 memory = "size=128M"
 smp = "cpus=1"
 user = ""

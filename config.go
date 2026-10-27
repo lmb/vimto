@@ -15,6 +15,7 @@ import (
 
 type config struct {
 	Kernel   string          `toml:"kernel"`
+	Userland string          `toml:"userland"`
 	Memory   string          `toml:"memory"`
 	SMP      string          `toml:"smp"`
 	User     string          `toml:"user"`
@@ -80,6 +81,10 @@ func configFlags(name string, cfg *config) *flag.FlagSet {
 		}
 
 		cfg.Kernel = fmt.Sprintf("%s:%s", image, tag)
+		return nil
+	})
+	fs.Func("userland", "`path or url` of an OCI image containing the guest's userland, for example 'alpine:latest'", func(s string) error {
+		cfg.Userland = s
 		return nil
 	})
 	fs.Func("memory", "memory to give to the VM", func(s string) error {
