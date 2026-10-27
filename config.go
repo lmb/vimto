@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"lmb.io/vimto/internal/guest"
 )
 
 type config struct {
@@ -22,16 +24,16 @@ type config struct {
 	User     string          `toml:"user"`
 	GDB      string          `toml:"-"`
 	Console  bool            `toml:"-"`
-	Setup    []configCommand `toml:"setup"`
-	Teardown []configCommand `toml:"teardown"`
+	Setup    []guest.Command `toml:"setup"`
+	Teardown []guest.Command `toml:"teardown"`
 }
 
 var defaultConfig = &config{
 	Volumes:  []string{},
 	Memory:   "size=128M",
 	SMP:      "cpus=1",
-	Setup:    []configCommand{},
-	Teardown: []configCommand{},
+	Setup:    []guest.Command{},
+	Teardown: []guest.Command{},
 }
 
 const configFileName = ".vimto.toml"

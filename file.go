@@ -3,22 +3,70 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"syscall"
 
 	"golang.org/x/sys/unix"
 )
 
-func replaceFdWithFile(sys syscaller, fd int, file *os.File) error {
-	_, err := fileControl(file, func(replacement uintptr) (struct{}, error) {
-		// dup2 overwrites fd with the newly opened file.
-		return struct{}{}, sys.dup2(int(replacement), fd)
-	})
+// Name of the init binary inside the boot directory.
+const bootDirInit = "init"
+
+// makeBootDir creates a directory for the guest to boot from. It contains
+// only the init binary and the mountpoints required during early boot.
+func makeBootDir(init string) (string, error) {
+	dir, err := os.MkdirTemp("", "vimto-boot-*")
 	if err != nil {
-		return fmt.Errorf("dup2: %w", err)
+		return "", err
 	}
-	return nil
+	defer func() {
+		if err != nil {
+			os.RemoveAll(dir)
+		}
+	}()
+
+	// dev is required for the devtmpfs automount (and therefore the init's
+	// console), tmp for the pivot to tmpfs.
+	for _, sub := range []string{"dev", "tmp"} {
+		if err := os.Mkdir(filepath.Join(dir, sub), 0755); err != nil {
+			return "", err
+		}
+	}
+
+	if err := linkOrCopy(init, filepath.Join(dir, bootDirInit)); err != nil {
+		return "", err
+	}
+
+	return dir, nil
+}
+
+// linkOrCopy makes src available at dst, copying if hard linking fails, e.g.
+// across file systems.
+func linkOrCopy(src, dst string) error {
+	if err := os.Link(src, dst); err == nil {
+		return nil
+	}
+
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
+	dstFile, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0755)
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
+
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		return err
+	}
+
+	return dstFile.Close()
 }
 
 func flock(f *os.File, how int) error {

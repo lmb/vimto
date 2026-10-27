@@ -23,18 +23,6 @@ import (
 	"rsc.io/script/scripttest"
 )
 
-func TestMain(m *testing.M) {
-	if os.Getpid() == 1 {
-		err := minimalInit(realSyscaller{}, os.Args[1:])
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Error from minimalInit:", err)
-			os.Exit(1)
-		}
-	}
-
-	os.Exit(m.Run())
-}
-
 func TestExecutable(t *testing.T) {
 	path := t.TempDir()
 	cmd := exec.Command("go", "build", "-o", path, ".")

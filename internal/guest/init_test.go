@@ -1,4 +1,4 @@
-package main
+package guest
 
 import (
 	"os"
@@ -9,7 +9,7 @@ import (
 )
 
 func TestFsMagic(t *testing.T) {
-	for _, mp := range earlyMounts {
+	for _, mp := range EarlyMounts {
 		_, ok := fsMagic[mp.fstype]
 		qt.Check(t, qt.IsTrue(ok), qt.Commentf("Unknown magic for fstype %q", mp.fstype))
 	}

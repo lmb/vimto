@@ -20,6 +20,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/unix"
+	"lmb.io/vimto/internal/guest"
 )
 
 const envDisableKVM = "VIMTO_DISABLE_KVM"
@@ -60,26 +61,29 @@ type command struct {
 	Stderr io.Writer
 
 	// A directory containing the kernel image's contents, made available at
-	// the p9KernelTag share.
+	// the guest.P9KernelTag share.
 	KernelImage string
 
 	// The guest's base file system. Defaults to the host's root.
 	Base string
 
 	// Sysctls set before the program is executed.
-	Sysctls []sysctl
+	Sysctls []guest.Sysctl
 
 	// Resource limits.
 	Rlimits map[int]unix.Rlimit
 
 	// Commands to execute before and after Path is executed.
-	Setup, Teardown []configCommand
+	Setup, Teardown []guest.Command
 
 	SerialPorts       map[string]*os.File
 	SharedDirectories []volume
 
 	cmd   *exec.Cmd
 	tasks errgroup.Group
+
+	// Directory exported as the guest's initial root file system.
+	bootDir string
 	// Console contains boot diagnostics may only be read once tasks.Wait() has returned.
 	console bytes.Buffer
 	// Results may contain the result of an execution after tasks.Wait() has returned.
@@ -133,6 +137,26 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	// subprocesses with this port as stdin, stdout and stderr.
 	virtioPorts.Chardevs[chardev("stdio")] = stdioPortName
 
+	init, err := extractVMInit(runtime.GOARCH)
+	if err != nil {
+		return fmt.Errorf("extracting init: %w", err)
+	}
+
+	// The boot directory is the guest's initial root file system. It only
+	// exists to make the init binary available to the kernel, the guest
+	// assembles its real root from the various 9p shares.
+	bootDir, err := makeBootDir(init)
+	if err != nil {
+		return err
+	}
+	cmd.bootDir = bootDir
+	defer func() {
+		if err != nil {
+			os.RemoveAll(bootDir)
+			cmd.bootDir = ""
+		}
+	}()
+
 	devices := []device{
 		arbitraryArgs{
 			"-nodefaults",
@@ -149,7 +173,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		disablePS2Probing{},
 		disableRaidAutodetect{},
 		&p9Root{
-			"/",
+			bootDir,
 		},
 		fds,
 		cds,
@@ -204,7 +228,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 			return fmt.Errorf("shared directory %q: can't mount over the guest's root", dir.Host)
 		}
 
-		fstype, found := earlyMounts.pathIsBelowMount(dir.Guest)
+		fstype, found := guest.EarlyMounts.PathIsBelowMount(dir.Guest)
 		if found && fstype != "tmpfs" {
 			return fmt.Errorf("directory %s is shadowed by %s mount in the guest", dir.Guest, fstype)
 		}
@@ -225,8 +249,8 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		}
 
 		devices = append(devices, &p9SharedDirectory{
-			fsdev(p9KernelTag),
-			p9KernelTag,
+			fsdev(guest.P9KernelTag),
+			guest.P9KernelTag,
 			kernelImage,
 			true,
 		})
@@ -242,8 +266,8 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	}
 
 	devices = append(devices, &p9SharedDirectory{
-		fsdev(p9BaseTag),
-		p9BaseTag,
+		fsdev(guest.P9BaseTag),
+		guest.P9BaseTag,
 		base,
 		true,
 	})
@@ -290,7 +314,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 				resolved := resolvePath(p)
 				parts[j] = resolved
 				// Warn if resolved path still under opaque directory
-				for _, opaque := range opaqueDirectories {
+				for _, opaque := range guest.OpaqueDirectories {
 					if resolved == opaque || strings.HasPrefix(resolved, opaque+"/") {
 						fmt.Fprintf(os.Stderr, "warning: PATH entry %q resolves to %q which is shadowed in the VM\n", p, resolved)
 						break
@@ -301,26 +325,23 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		}
 	}
 
-	execCmd := execCommand{
-		cmd.Path,
-		cmd.Args,
-		cmd.Dir,
-		uid, gid,
-		env,
-		cmd.Sysctls,
-		cmd.Rlimits,
-		cmd.Setup, cmd.Teardown,
-		mountTags,
-	}
-
-	init, err := findExecutable()
-	if err != nil {
-		return err
+	execCmd := guest.ExecCommand{
+		Path:      cmd.Path,
+		Args:      cmd.Args,
+		Dir:       cmd.Dir,
+		Uid:       uid,
+		Gid:       gid,
+		Env:       env,
+		Sysctls:   cmd.Sysctls,
+		Rlimits:   cmd.Rlimits,
+		Setup:     cmd.Setup,
+		Teardown:  cmd.Teardown,
+		MountTags: mountTags,
 	}
 
 	// init has to go last since we stop processing of KArgs after.
 	devices = append(devices, initWithArgs{
-		init,
+		"/" + bootDirInit,
 		[]string{stdioPortName, controlPortName},
 	})
 
@@ -378,7 +399,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 
 	results := make(chan error, 1)
 	cmd.tasks.Go(func() error {
-		comm := newRPC(control)
+		comm := guest.NewRPC(control)
 		defer comm.Close()
 
 		if err := comm.Write(&execCmd, time.Now().Add(time.Second)); err != nil {
@@ -401,6 +422,11 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 
 func (cmd *command) Wait() error {
 	defer cmd.fakeStdin.Close()
+	defer func() {
+		if cmd.bootDir != "" {
+			os.RemoveAll(cmd.bootDir)
+		}
+	}()
 
 	if err := cmd.cmd.Wait(); err != nil {
 		return fmt.Errorf("qemu: %w", err)
@@ -718,7 +744,7 @@ func (*p9Root) KArgs() []string {
 	return []string{
 		"root=/dev/root",
 		"rootfstype=9p",
-		"rootflags=" + default9POptions,
+		"rootflags=" + guest.Default9POptions,
 	}
 }
 

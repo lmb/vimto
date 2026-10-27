@@ -68,6 +68,21 @@ jobs:
     - name: Test
       run: go test -v ./...
 
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version-file: 'go.mod'
+
+    - run: go generate ./...
+
+    - name: Check for drift
+      run: git diff --exit-code --stat
+
   results:
     if: ${{ always() }}
     runs-on: ubuntu-latest
@@ -75,6 +90,7 @@ jobs:
     needs:
     - amd64
     - arm64
+    - generate
     steps:
     - run: exit 1
       if: >-

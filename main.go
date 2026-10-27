@@ -16,23 +16,16 @@ import (
 
 	"github.com/kballard/go-shellquote"
 	"golang.org/x/sys/unix"
+	"lmb.io/vimto/internal/guest"
 )
 
 func main() {
-	args := os.Args[1:]
-
-	var err error
-	if os.Getpid() == 1 {
-		err = minimalInit(realSyscaller{}, args)
-	} else {
-		err = run(args)
-	}
-
+	err := run(os.Args[1:])
 	if err == nil || errors.Is(err, flag.ErrHelp) {
 		return
 	}
 
-	var exitError *guestExitError
+	var exitError *guest.ExitError
 	if errors.As(err, &exitError) {
 		os.Exit(exitError.ExitCode)
 	}
@@ -176,10 +169,6 @@ func execCmd(cfg *config, args []string) error {
 		return fmt.Errorf("missing arguments")
 	}
 
-	if !staticBuild {
-		return errors.New("binary is not statically linked (did you build with CGO_ENABLED=0?)")
-	}
-
 	bf, err := findBootFiles(cfg.Kernel, runtime.GOARCH)
 	if err != nil {
 		return err
@@ -282,8 +271,8 @@ func execCmd(cfg *config, args []string) error {
 		Stderr:      os.Stderr,
 		KernelImage: bf.Overlay,
 		Base:        userland,
-		Sysctls: []sysctl{
-			{"kernel.core_pattern", filepath.Join(wd, corePrefix+"%e.%p.%t")},
+		Sysctls: []guest.Sysctl{
+			{Name: "kernel.core_pattern", Value: filepath.Join(wd, corePrefix+"%e.%p.%t")},
 		},
 		Rlimits: map[int]unix.Rlimit{
 			unix.RLIMIT_CORE: {Cur: unix.RLIM_INFINITY, Max: unix.RLIM_INFINITY},

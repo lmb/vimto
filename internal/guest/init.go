@@ -1,4 +1,9 @@
-package main
+// Package guest implements the init process of the virtual machine.
+//
+// It is built into a separate, statically linked binary which vimto embeds
+// and boots the guest from. The host only imports the types shared with the
+// init over the control port.
+package guest
 
 import (
 	"errors"
@@ -20,24 +25,23 @@ import (
 // Default options used to mount a 9pfs.
 //
 // - cache=mmap: required to avoid mmap returning EINVAL.
-const default9POptions = "version=9p2000.L,trans=virtio,access=any,msize=1048576,cache=mmap"
+const Default9POptions = "version=9p2000.L,trans=virtio,access=any,msize=1048576,cache=mmap"
 
 // Tag of the 9p share containing the guest's base file system.
-const p9BaseTag = "base"
+const P9BaseTag = "base"
 
 // Tag of the 9p share containing the kernel image's overlay.
-const p9KernelTag = "kernel"
+const P9KernelTag = "kernel"
 
-type syscaller interface {
+type Syscaller interface {
 	mount(*mountPoint) error
 	sync()
 	reboot(int) error
-	dup2(int, int) error
 }
 
-type realSyscaller struct{}
+type RealSyscaller struct{}
 
-func (rs realSyscaller) mount(mp *mountPoint) error {
+func (rs RealSyscaller) mount(mp *mountPoint) error {
 	err := unix.Mount(mp.source, mp.target, mp.fstype, mp.flags, mp.options)
 	if err != nil {
 		return fmt.Errorf("mount %s: %w", mp.target, err)
@@ -45,16 +49,12 @@ func (rs realSyscaller) mount(mp *mountPoint) error {
 	return nil
 }
 
-func (rs realSyscaller) sync() {
+func (rs RealSyscaller) sync() {
 	unix.Sync()
 }
 
-func (rs realSyscaller) reboot(cmd int) error {
+func (rs RealSyscaller) reboot(cmd int) error {
 	return unix.Reboot(cmd)
-}
-
-func (rs realSyscaller) dup2(old, new int) error {
-	return unix.Dup2(old, new)
 }
 
 func mount(source, target, fstype string, flags uintptr, data string) error {
@@ -95,7 +95,7 @@ func (mp *mountPoint) String() string {
 type mountTable []*mountPoint
 
 // Reference is https://github.com/systemd/systemd/blob/307b6a4dab21c854b141b53d9bdd05c8af0abc78/src/shared/mount-setup.c#L79
-var earlyMounts = mountTable{
+var EarlyMounts = mountTable{
 	{"sys", "/sys", "sysfs", "", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV, true},
 	{"proc", "/proc", "proc", "", unix.MS_NOSUID | unix.MS_NOEXEC | unix.MS_NODEV, true},
 	{"devtmpfs", "/dev", "devtmpfs", "mode=0755", unix.MS_NOSUID | unix.MS_STRICTATIME, true},
@@ -114,7 +114,7 @@ var earlyMounts = mountTable{
 
 // Directories from the host root filesystem which should not be accessible in
 // the VM. They are replaced with an empty directory.
-var opaqueDirectories = []string{
+var OpaqueDirectories = []string{
 	"/dev/shm",
 	"/tmp",
 	"/run",
@@ -138,7 +138,7 @@ var fsMagic = map[string]int64{
 // Mount all mount points contained in the table.
 //
 // Returns a list of optional mount points which failed to mount.
-func (mt mountTable) mountAll(sys syscaller) ([]*mountPoint, error) {
+func (mt mountTable) mountAll(sys Syscaller) ([]*mountPoint, error) {
 	var ignored []*mountPoint
 	for _, mp := range mt {
 		if _, err := os.Stat(mp.target); errors.Is(err, unix.ENOENT) {
@@ -170,7 +170,7 @@ func (mt mountTable) mountAll(sys syscaller) ([]*mountPoint, error) {
 	return ignored, nil
 }
 
-func (mt mountTable) pathIsBelowMount(path string) (string, bool) {
+func (mt mountTable) PathIsBelowMount(path string) (string, bool) {
 	for _, mp := range mt {
 		target := mp.target
 		if len(target) > 0 && target[len(target)-1] != filepath.Separator {
@@ -185,7 +185,7 @@ func (mt mountTable) pathIsBelowMount(path string) (string, bool) {
 	return "", false
 }
 
-func minimalInit(sys syscaller, args []string) error {
+func Init(sys Syscaller, args []string) error {
 	err := func() error {
 		if len(args) != 2 {
 			return fmt.Errorf("expected two arguments, got %q", args)
@@ -198,7 +198,7 @@ func minimalInit(sys syscaller, args []string) error {
 			return err
 		}
 
-		ignored, err := earlyMounts.mountAll(sys)
+		ignored, err := EarlyMounts.mountAll(sys)
 		if err != nil {
 			return fmt.Errorf("mount: %w", err)
 		}
@@ -223,11 +223,11 @@ func minimalInit(sys syscaller, args []string) error {
 		if err != nil {
 			return err
 		}
-		comm := newRPC(control)
+		comm := NewRPC(control)
 		defer comm.Close()
 		delete(ports, controlPort)
 
-		var cmd execCommand
+		var cmd ExecCommand
 		if err := comm.Read(&cmd, time.Now().Add(time.Second)); err != nil {
 			return fmt.Errorf("read command: %w", err)
 		}
@@ -246,7 +246,7 @@ func minimalInit(sys syscaller, args []string) error {
 			err = sys.mount(&mountPoint{
 				tag, path,
 				"9p",
-				default9POptions,
+				Default9POptions,
 				0,
 				false, // ignored
 			})
@@ -272,10 +272,10 @@ func minimalInit(sys syscaller, args []string) error {
 		}
 
 		// Apply sysctls.
-		for _, sysctl := range cmd.Sysctls {
-			err = writeSysctl(sysctl.Name, sysctl.Value)
+		for _, Sysctl := range cmd.Sysctls {
+			err = writeSysctl(Sysctl.Name, Sysctl.Value)
 			if err != nil {
-				return fmt.Errorf("set sysctl %s: %w", sysctl.Name, err)
+				return fmt.Errorf("set Sysctl %s: %w", Sysctl.Name, err)
 			}
 		}
 
@@ -337,9 +337,9 @@ func minimalInit(sys syscaller, args []string) error {
 
 		var exitError *exec.ExitError
 		if errors.As(result, &exitError) && exitError.Exited() {
-			result = &guestExitError{exitError.ExitCode()}
+			result = &ExitError{exitError.ExitCode()}
 		} else if result != nil {
-			result = &genericGuestError{result.Error()}
+			result = &GenericError{result.Error()}
 		}
 
 		return comm.Write(&result, time.Now().Add(time.Second))
@@ -403,7 +403,7 @@ func setupLoopback() error {
 	return conn.LinkUp(lo)
 }
 
-func executeSimpleCommands(cmds []configCommand, dir string, env []string) error {
+func executeSimpleCommands(cmds []Command, dir string, env []string) error {
 	for _, args := range cmds {
 		if len(args) < 1 {
 			return fmt.Errorf("invalid empty command")
@@ -433,7 +433,7 @@ func prepareRoot() error {
 	)
 
 	// The current mount table looks something like this:
-	//    /    9pfs     mount of the host's root
+	//    /    9pfs     boot directory containing the init binary
 	//    /dev devtmpfs (automounted)
 
 	// Remove unnecessary /dev, we're going to mount our own later on.
@@ -471,7 +471,7 @@ func prepareRoot() error {
 	// as base dir.
 	//
 	// See https://docs.kernel.org/filesystems/overlayfs.html#whiteouts-and-opaque-directories
-	for _, opaque := range opaqueDirectories {
+	for _, opaque := range OpaqueDirectories {
 		path := filepath.Join(upperDir, opaque)
 		if err := os.MkdirAll(path, 0755); err != nil {
 			return fmt.Errorf("make directory opaque: %w", err)
@@ -484,7 +484,7 @@ func prepareRoot() error {
 
 	// The base of the guest's file system. The host decides whether this is
 	// its own root or a userland image, the guest doesn't care.
-	if err := mount(p9BaseTag, baseDir, "9p", unix.MS_RDONLY, default9POptions); err != nil {
+	if err := mount(P9BaseTag, baseDir, "9p", unix.MS_RDONLY, Default9POptions); err != nil {
 		return fmt.Errorf("mount base: %w", err)
 	}
 
@@ -494,7 +494,7 @@ func prepareRoot() error {
 	lowerDirs := []string{baseDir}
 
 	// Optionally mount the kernel image and merge it over the base.
-	err := mount(p9KernelTag, kernelDir, "9p", unix.MS_RDONLY, default9POptions)
+	err := mount(P9KernelTag, kernelDir, "9p", unix.MS_RDONLY, Default9POptions)
 	if err != nil {
 		if !errors.Is(err, unix.ENOENT) {
 			return fmt.Errorf("mount kernel image: %w", err)
