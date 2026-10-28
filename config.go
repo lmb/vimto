@@ -103,7 +103,7 @@ func configFlags(name string, cfg *config) *flag.FlagSet {
 		cfg.SMP = s
 		return nil
 	})
-	fs.BoolFunc("sudo", "execute as root", func(s string) error {
+	fs.BoolFunc("sudo", "run the process as root inside the VM, otherwise run as the current user (default: false)", func(s string) error {
 		if s != "true" {
 			return errors.New("flag only accepts true")
 		}
