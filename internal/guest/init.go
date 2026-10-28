@@ -77,7 +77,12 @@ func mountOverlay(target, upperdir, workdir string, lowerdirs []string) error {
 		options.WriteString(strings.ReplaceAll(dir, `:`, `\:`))
 	}
 
-	return unix.Mount("overlay", target, "overlay", 0, options.String())
+	// 9p passes the host's file ownership through unchanged. Images extracted
+	// by an unprivileged user retain their setuid bits but not their owner, so
+	// executing e.g. mount would switch from root to that user. Ignore the bits
+	// like container runtimes do. The flag has to be set on the mount a file is
+	// executed through, which is the overlay rather than its layers.
+	return unix.Mount("overlay", target, "overlay", unix.MS_NOSUID, options.String())
 }
 
 type mountPoint struct {
@@ -247,7 +252,7 @@ func Init(sys Syscaller, args []string) error {
 				tag, path,
 				"9p",
 				Default9POptions,
-				0,
+				unix.MS_NOSUID,
 				false, // ignored
 			})
 			if err != nil {
@@ -484,7 +489,7 @@ func prepareRoot() error {
 
 	// The base of the guest's file system. The host decides whether this is
 	// its own root or a userland image, the guest doesn't care.
-	if err := mount(P9BaseTag, baseDir, "9p", unix.MS_RDONLY, Default9POptions); err != nil {
+	if err := mount(P9BaseTag, baseDir, "9p", unix.MS_RDONLY|unix.MS_NOSUID, Default9POptions); err != nil {
 		return fmt.Errorf("mount base: %w", err)
 	}
 
@@ -494,7 +499,7 @@ func prepareRoot() error {
 	lowerDirs := []string{baseDir}
 
 	// Optionally mount the kernel image and merge it over the base.
-	err := mount(P9KernelTag, kernelDir, "9p", unix.MS_RDONLY, Default9POptions)
+	err := mount(P9KernelTag, kernelDir, "9p", unix.MS_RDONLY|unix.MS_NOSUID, Default9POptions)
 	if err != nil {
 		if !errors.Is(err, unix.ENOENT) {
 			return fmt.Errorf("mount kernel image: %w", err)
