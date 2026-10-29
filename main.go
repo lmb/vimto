@@ -158,6 +158,13 @@ func goTestCmd(cfg *config, flags []string, goBinary string, goArgs []string) er
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+
+	// A userland's libc may not match the host's, so prefer static binaries.
+	// Respect an explicit choice by the user as CGo is required for -race.
+	if _, ok := os.LookupEnv("CGO_ENABLED"); !ok && cfg.Userland != "" {
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	}
+
 	return cmd.Run()
 }
 
