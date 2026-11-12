@@ -20,10 +20,10 @@ jobs:
       CI_KERNEL: ghcr.io/cilium/ci-kernels:${{ matrix.kernel-version }}
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v7
 
     - name: Set up Go
-      uses: actions/setup-go@v4
+      uses: actions/setup-go@v7
       with:
         go-version-file: 'go.mod'
 
@@ -50,10 +50,10 @@ jobs:
       VIMTO_DISABLE_KVM: "true"
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v7
 
     - name: Set up Go
-      uses: actions/setup-go@v4
+      uses: actions/setup-go@v7
       with:
         go-version-file: 'go.mod'
 
@@ -71,10 +71,10 @@ jobs:
   generate:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v7
 
     - name: Set up Go
-      uses: actions/setup-go@v4
+      uses: actions/setup-go@v7
       with:
         go-version-file: 'go.mod'
 
