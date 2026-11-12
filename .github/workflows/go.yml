@@ -11,13 +11,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  matrix:
+    name: Get ci-kernels test matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.filter.outputs.matrix }}
+    steps:
+    - id: matrix
+      uses: cilium/ci-kernels/matrix@v7.3
+
+    - id: filter
+      name: Select newest and oldest kernel
+      env:
+        MATRIX: ${{ steps.matrix.outputs.matrix }}
+      run: echo "matrix=$(jq -c '[first, last]' <<< "$MATRIX")" >> "$GITHUB_OUTPUT"
+
   amd64:
-    runs-on: buildjet-2vcpu-ubuntu-2204
+    name: amd64 (${{ matrix.version }})
+    runs-on: ubuntu-26.04
+    needs: matrix
     strategy:
       matrix:
-        kernel-version: [ "stable", "4.9" ]
+        include: ${{ fromJSON(needs.matrix.outputs.matrix) }}
     env:
-      CI_KERNEL: ghcr.io/cilium/ci-kernels:${{ matrix.kernel-version }}
+      CI_KERNEL: ghcr.io/cilium/ci-kernels:${{ matrix.version }}
 
     steps:
     - uses: actions/checkout@v7
@@ -41,12 +58,14 @@ jobs:
       run: go test -v ./...
 
   arm64:
-    runs-on: buildjet-2vcpu-ubuntu-2204-arm
+    name: arm64 (${{ matrix.version }})
+    runs-on: ubuntu-26.04-arm
+    needs: matrix
     strategy:
       matrix:
-        kernel-version: [ "stable" ]
+        include: ${{ fromJSON(needs.matrix.outputs.matrix) }}
     env:
-      CI_KERNEL: ghcr.io/cilium/ci-kernels:${{ matrix.kernel-version }}
+      CI_KERNEL: ghcr.io/cilium/ci-kernels:${{ matrix.version }}
       VIMTO_DISABLE_KVM: "true"
 
     steps:
@@ -88,6 +107,7 @@ jobs:
     runs-on: ubuntu-latest
     name: Results
     needs:
+    - matrix
     - amd64
     - arm64
     - generate
