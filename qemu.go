@@ -20,15 +20,14 @@ import (
 
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/unix"
+	"lmb.io/vimto/internal/guest"
 )
-
-const p9OverlayTag = "overlay"
 
 const envDisableKVM = "VIMTO_DISABLE_KVM"
 
-type sysctl struct {
-	Name  string
-	Value string
+// volume is a host directory made available at a path in the guest.
+type volume struct {
+	Host, Guest string
 }
 
 // command is a binary to be executed under a different kernel.
@@ -36,6 +35,9 @@ type sysctl struct {
 // Mirrors exec.Cmd.
 type command struct {
 	Kernel string
+	// Architecture of the VM in GOARCH notation. Defaults to runtime.GOARCH,
+	// in which case KVM is available.
+	Arch string
 	// Memory to give to the VM. Passed verbatim as the QEMU -m flag.
 	Memory string
 	// SMP is passed verbatim as the QEMU -smp flag.
@@ -43,6 +45,9 @@ type command struct {
 	// Enabled the GDB server on the specified address. The VM will be
 	// paused on startup and wait for a "continue" from a gdb client.
 	GDB string
+	// Console receives a live copy of the guest's console output. Optional,
+	// mainly useful to debug boot problems.
+	Console io.Writer
 	// Path to the binary to execute.
 	Path string
 	// Arguments passed to the binary. The first element is conventionally Path.
@@ -57,23 +62,31 @@ type command struct {
 	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
-	// A directory to overlay over the root filesystem.
-	RootOverlay string
+
+	// A directory containing the kernel image's contents, made available at
+	// the guest.P9KernelTag share.
+	KernelImage string
+
+	// The guest's base file system. Defaults to the host's root.
+	Base string
 
 	// Sysctls set before the program is executed.
-	Sysctls []sysctl
+	Sysctls []guest.Sysctl
 
 	// Resource limits.
 	Rlimits map[int]unix.Rlimit
 
 	// Commands to execute before and after Path is executed.
-	Setup, Teardown []configCommand
+	Setup, Teardown []guest.Command
 
 	SerialPorts       map[string]*os.File
-	SharedDirectories []string
+	SharedDirectories []volume
 
 	cmd   *exec.Cmd
 	tasks errgroup.Group
+
+	// Directory exported as the guest's initial root file system.
+	bootDir string
 	// Console contains boot diagnostics may only be read once tasks.Wait() has returned.
 	console bytes.Buffer
 	// Results may contain the result of an execution after tasks.Wait() has returned.
@@ -96,9 +109,14 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		return errors.New("qemu: already started")
 	}
 
+	arch := cmd.Arch
+	if arch == "" {
+		arch = runtime.GOARCH
+	}
+
 	fds := &fdSets{}
 	cds := &chardevs{}
-	ports := &serialPorts{}
+	ports := &serialPorts{tty: guestTTY(arch)}
 	virtioPorts := &virtioSerialPorts{make(map[chardev]string)}
 
 	// The first serial port is always console, earlyprintk and SeaBIOS (on amd64)
@@ -127,6 +145,26 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	// subprocesses with this port as stdin, stdout and stderr.
 	virtioPorts.Chardevs[chardev("stdio")] = stdioPortName
 
+	init, err := extractVMInit(arch)
+	if err != nil {
+		return fmt.Errorf("extracting init: %w", err)
+	}
+
+	// The boot directory is the guest's initial root file system. It only
+	// exists to make the init binary available to the kernel, the guest
+	// assembles its real root from the various 9p shares.
+	bootDir, err := makeBootDir(init)
+	if err != nil {
+		return err
+	}
+	cmd.bootDir = bootDir
+	defer func() {
+		if err != nil {
+			os.RemoveAll(bootDir)
+			cmd.bootDir = ""
+		}
+	}()
+
 	devices := []device{
 		arbitraryArgs{
 			"-nodefaults",
@@ -143,7 +181,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		disablePS2Probing{},
 		disableRaidAutodetect{},
 		&p9Root{
-			"/",
+			bootDir,
 		},
 		fds,
 		cds,
@@ -160,6 +198,11 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		}
 	}
 
+	if arch != runtime.GOARCH {
+		// KVM can't virtualise a foreign architecture.
+		disableKVM = true
+	}
+
 	if !disableKVM {
 		devices = append(devices, arbitraryArgs{"-enable-kvm"})
 	} else if cmd.Stderr != nil {
@@ -167,7 +210,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	}
 
 	var binary string
-	switch runtime.GOARCH {
+	switch arch {
 	case "amd64":
 		binary = "qemu-system-x86_64"
 		devices = append(devices, earlyprintkOnSerialPort{consolePort})
@@ -180,7 +223,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		)
 
 	default:
-		return fmt.Errorf("unsupported GOARCH %s", runtime.GOARCH)
+		return fmt.Errorf("unsupported architecture %q", arch)
 	}
 
 	for name, port := range cmd.SerialPorts {
@@ -189,34 +232,58 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 
 	mountTags := make(map[string]string)
 	for i, dir := range cmd.SharedDirectories {
-		fstype, found := earlyMounts.pathIsBelowMount(dir)
+		if !filepath.IsAbs(dir.Guest) {
+			return fmt.Errorf("shared directory %q: guest path must be absolute", dir.Guest)
+		}
+
+		if filepath.Clean(dir.Guest) == "/" {
+			// Would hide the root assembled by the guest.
+			return fmt.Errorf("shared directory %q: can't mount over the guest's root", dir.Host)
+		}
+
+		fstype, found := guest.EarlyMounts.PathIsBelowMount(dir.Guest)
 		if found && fstype != "tmpfs" {
-			return fmt.Errorf("directory %s is shadowed by %s mount in the guest", dir, fstype)
+			return fmt.Errorf("directory %s is shadowed by %s mount in the guest", dir.Guest, fstype)
 		}
 
 		id := fmt.Sprintf("sd-9p-%d", i)
-		mountTags[id] = dir
+		mountTags[id] = dir.Guest
 		devices = append(devices, &p9SharedDirectory{
 			ID:   fsdev(id),
 			Tag:  id,
-			Path: dir,
+			Path: dir.Host,
 		})
 	}
 
-	var rootOverlay string
-	if cmd.RootOverlay != "" {
-		rootOverlay, err = filepath.Abs(cmd.RootOverlay)
+	if cmd.KernelImage != "" {
+		kernelImage, err := filepath.Abs(cmd.KernelImage)
 		if err != nil {
 			return err
 		}
 
 		devices = append(devices, &p9SharedDirectory{
-			fsdev(p9OverlayTag),
-			p9OverlayTag,
-			rootOverlay,
+			fsdev(guest.P9KernelTag),
+			guest.P9KernelTag,
+			kernelImage,
 			true,
 		})
 	}
+
+	base := cmd.Base
+	if base == "" {
+		base = "/"
+	}
+	base, err = filepath.Abs(base)
+	if err != nil {
+		return err
+	}
+
+	devices = append(devices, &p9SharedDirectory{
+		fsdev(guest.P9BaseTag),
+		guest.P9BaseTag,
+		base,
+		true,
+	})
 
 	if cmd.GDB != "" {
 		devices = append(devices, gdbServer{cmd.GDB})
@@ -260,7 +327,7 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 				resolved := resolvePath(p)
 				parts[j] = resolved
 				// Warn if resolved path still under opaque directory
-				for _, opaque := range opaqueDirectories {
+				for _, opaque := range guest.OpaqueDirectories {
 					if resolved == opaque || strings.HasPrefix(resolved, opaque+"/") {
 						fmt.Fprintf(os.Stderr, "warning: PATH entry %q resolves to %q which is shadowed in the VM\n", p, resolved)
 						break
@@ -271,26 +338,23 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 		}
 	}
 
-	execCmd := execCommand{
-		cmd.Path,
-		cmd.Args,
-		cmd.Dir,
-		uid, gid,
-		env,
-		cmd.Sysctls,
-		cmd.Rlimits,
-		cmd.Setup, cmd.Teardown,
-		mountTags,
-	}
-
-	init, err := findExecutable()
-	if err != nil {
-		return err
+	execCmd := guest.ExecCommand{
+		Path:      cmd.Path,
+		Args:      cmd.Args,
+		Dir:       cmd.Dir,
+		Uid:       uid,
+		Gid:       gid,
+		Env:       env,
+		Sysctls:   cmd.Sysctls,
+		Rlimits:   cmd.Rlimits,
+		Setup:     cmd.Setup,
+		Teardown:  cmd.Teardown,
+		MountTags: mountTags,
 	}
 
 	// init has to go last since we stop processing of KArgs after.
 	devices = append(devices, initWithArgs{
-		init,
+		"/" + bootDirInit,
 		[]string{stdioPortName, controlPortName},
 	})
 
@@ -337,13 +401,18 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 	cmd.tasks.Go(func() error {
 		defer consoleHost.Close()
 
-		_, err = io.Copy(&cmd.console, consoleHost)
+		var console io.Writer = &cmd.console
+		if cmd.Console != nil {
+			console = io.MultiWriter(console, cmd.Console)
+		}
+
+		_, err = io.Copy(console, consoleHost)
 		return err
 	})
 
 	results := make(chan error, 1)
 	cmd.tasks.Go(func() error {
-		comm := newRPC(control)
+		comm := guest.NewRPC(control)
 		defer comm.Close()
 
 		if err := comm.Write(&execCmd, time.Now().Add(time.Second)); err != nil {
@@ -366,6 +435,11 @@ func (cmd *command) Start(ctx context.Context) (err error) {
 
 func (cmd *command) Wait() error {
 	defer cmd.fakeStdin.Close()
+	defer func() {
+		if cmd.bootDir != "" {
+			os.RemoveAll(cmd.bootDir)
+		}
+	}()
 
 	if err := cmd.cmd.Wait(); err != nil {
 		return fmt.Errorf("qemu: %w", err)
@@ -394,34 +468,6 @@ func (s controlCodeStripper) Read(buf []byte) (int, error) {
 	n, err := s.Reader.Read(buf)
 	n = copy(buf, seBIOSEscapeCodes.ReplaceAll(buf[:n], nil))
 	return n, err
-}
-
-type execCommand struct {
-	Path            string
-	Args            []string
-	Dir             string
-	Uid, Gid        int
-	Env             []string
-	Sysctls         []sysctl
-	Rlimits         map[int]unix.Rlimit
-	Setup, Teardown []configCommand
-	MountTags       map[string]string // map[tag]path
-}
-
-type guestExitError struct {
-	ExitCode int
-}
-
-func (gee *guestExitError) Error() string {
-	return fmt.Sprintf("guest: exit %d", gee.ExitCode)
-}
-
-type genericGuestError struct {
-	Message string
-}
-
-func (gge *genericGuestError) Error() string {
-	return fmt.Sprintf("guest: %s", gge.Message)
 }
 
 type device interface {
@@ -551,16 +597,13 @@ func (*chardevs) KArgs() []string { return nil }
 //
 // Probably more portable than virtio-serial, but doesn't allow naming.
 type serialPorts struct {
+	// Name of the tty devices without an index, e.g. "ttyS" or "ttyAMA".
+	tty      string
 	Chardevs []chardev
 }
 
 func (ports *serialPorts) add(cd chardev) string {
-	pattern := "ttyS%d"
-	if runtime.GOARCH == "arm64" {
-		pattern = "ttyAMA%d"
-	}
-
-	port := fmt.Sprintf(pattern, len(ports.Chardevs))
+	port := fmt.Sprintf("%s%d", ports.tty, len(ports.Chardevs))
 	ports.Chardevs = append(ports.Chardevs, cd)
 	return port
 }
@@ -695,6 +738,16 @@ func (gdbServer) KArgs() []string {
 
 type fsdev string
 
+// guestTTY returns the name of the guest's serial port ttys for an
+// architecture, without an index.
+func guestTTY(arch string) string {
+	if arch == "arm64" {
+		// The arm64 virt board only has pl011 UARTs.
+		return "ttyAMA"
+	}
+	return "ttyS"
+}
+
 type p9Root struct {
 	Path string
 }
@@ -711,7 +764,7 @@ func (*p9Root) KArgs() []string {
 	return []string{
 		"root=/dev/root",
 		"rootfstype=9p",
-		"rootflags=" + default9POptions,
+		"rootflags=" + guest.Default9POptions,
 	}
 }
 

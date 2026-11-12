@@ -3,13 +3,12 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"debug/elf"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
-	"slices"
 	"time"
 
 	"github.com/adrg/xdg"
@@ -42,21 +41,30 @@ func newImageCache() (*imageCache, error) {
 
 // Acquire an image from the cache.
 //
+// fixup is applied to the contents after extraction. variant distinguishes
+// cache entries whose contents differ due to fixup.
+//
 // The image remains valid even after closing the cache.
-func (ic *imageCache) Acquire(ctx context.Context, refStr string, status io.Writer) (_ *image, err error) {
+func (ic *imageCache) Acquire(ctx context.Context, refStr, arch, variant string, status io.Writer, fixup func(dir string) error) (_ *image, err error) {
 	ref, err := name.ParseReference(refStr)
 	if err != nil {
 		return nil, fmt.Errorf("parsing reference %q: %w", refStr, err)
 	}
 
-	// Use the sha256 of the canonical reference as the cache key. This means
-	// that images / tags pointing at the blob will have separate cache entries.
-	dir := fmt.Sprintf("%x", sha256.Sum256([]byte(ref.Name())))
+	// Use the sha256 of the canonical reference, the architecture and the
+	// variant as the cache key. This means that images / tags pointing at the
+	// blob will have separate cache entries.
+	dir := fmt.Sprintf("%x", sha256.Sum256([]byte(ref.Name()+arch+variant)))
 
 	lock, path, err := populateDirectoryOnce(filepath.Join(ic.baseDir, dir), func(path string) error {
-		err := fetchImage(ctx, refStr, path, status)
-		if err != nil {
+		if err := fetchImage(ctx, refStr, arch, path, status); err != nil {
 			return fmt.Errorf("fetch image: %w", err)
+		}
+
+		if fixup != nil {
+			if err := fixup(path); err != nil {
+				return fmt.Errorf("fix up image: %w", err)
+			}
 		}
 
 		return nil
@@ -152,6 +160,9 @@ type bootFiles struct {
 	// Path to the kernel to boot.
 	Kernel string
 
+	// Path to an ELF binary with symbols matching Kernel. Optional.
+	Symbols string
+
 	// Path to a directory to be overlaid over the root filesystem. Optional.
 	Overlay string
 
@@ -159,11 +170,26 @@ type bootFiles struct {
 	Image *image
 }
 
-func newBootFiles(path string) (*bootFiles, error) {
-	for _, kernel := range []string{
-		"boot/vmlinux",
-		"boot/vmlinuz",
-	} {
+func newBootFiles(path, arch string) (*bootFiles, error) {
+	const (
+		vmlinux = "boot/vmlinux"
+		vmlinuz = "boot/vmlinuz"
+	)
+	kernels := []string{vmlinux, vmlinuz}
+	if arch == "arm64" {
+		// vmlinux is an ELF with symbols, vmlinuz the arch-specific boot
+		// format. QEMU boots ELF kernels on most architectures: riscv loads
+		// them directly, amd64 uses the PVH entry point. arm64 is different:
+		// vmlinux is linked at virtual addresses (p_paddr == p_vaddr, the
+		// kernel's linker script doesn't use AT()) and QEMU's generic ELF
+		// loader doesn't implement the arm64 boot protocol. The kernel executes
+		// from head.S regardless, but faults as soon as it enables the MMU.
+		kernels = []string{vmlinuz}
+	}
+
+	for _, kernel := range kernels {
+		// Pick the first-found kernel image in the list. Debug images have a
+		// vmlinux with symbols, so prioritize it to make gdb attaches work.
 		kernelPath := filepath.Join(path, kernel)
 		if _, err := os.Stat(kernelPath); errors.Is(err, os.ErrNotExist) {
 			continue
@@ -171,17 +197,27 @@ func newBootFiles(path string) (*bootFiles, error) {
 			return nil, err
 		}
 
-		return &bootFiles{
+		// Debug images contain a vmlinux with debug symbols. Keep a reference
+		// to it even when it isn't bootable, e.g. for use by a debugger.
+		var symbols string
+		if _, err := os.Stat(filepath.Join(path, vmlinux)); err == nil {
+			symbols = vmlinux
+		}
+
+		bf := &bootFiles{
 			Kernel:  kernelPath,
 			Overlay: path,
-		}, nil
+			Symbols: symbols,
+		}
+
+		return bf, nil
 	}
 
 	return nil, fmt.Errorf("no kernel found in %s", path)
 }
 
-func newBootFilesFromImage(img *image) (*bootFiles, error) {
-	bf, err := newBootFiles(img.Directory)
+func newBootFilesFromImage(img *image, arch string) (*bootFiles, error) {
+	bf, err := newBootFiles(img.Directory, arch)
 	if err != nil {
 		return nil, fmt.Errorf("image %s: %w", img.Name, err)
 	}
@@ -190,15 +226,17 @@ func newBootFilesFromImage(img *image) (*bootFiles, error) {
 	return bf, nil
 }
 
-var remoteOptions = []remote.Option{
-	remote.WithUserAgent("vimto"),
-	remote.WithPlatform(v1.Platform{
-		OS:           "linux",
-		Architecture: runtime.GOARCH,
-	}),
+func remoteOptions(arch string) []remote.Option {
+	return []remote.Option{
+		remote.WithUserAgent("vimto"),
+		remote.WithPlatform(v1.Platform{
+			OS:           "linux",
+			Architecture: arch,
+		}),
+	}
 }
 
-func fetchImage(ctx context.Context, refStr, dst string, status io.Writer) error {
+func fetchImage(ctx context.Context, refStr, arch, dst string, status io.Writer) error {
 	ref, err := name.ParseReference(refStr)
 	if err != nil {
 		return fmt.Errorf("parsing reference %q: %w", refStr, err)
@@ -206,7 +244,7 @@ func fetchImage(ctx context.Context, refStr, dst string, status io.Writer) error
 
 	bar := progressbar.NewOptions64(
 		-1,
-		progressbar.OptionSetDescription(fmt.Sprintf("Caching %s", ref.Name())),
+		progressbar.OptionSetDescription(fmt.Sprintf("Caching %s (linux/%s)", ref.Name(), arch)),
 		progressbar.OptionSetWriter(status),
 		progressbar.OptionShowBytes(true),
 		progressbar.OptionShowTotalBytes(false),
@@ -219,7 +257,7 @@ func fetchImage(ctx context.Context, refStr, dst string, status io.Writer) error
 	)
 	defer bar.Finish()
 
-	options := append(slices.Clone(remoteOptions),
+	options := append(remoteOptions(arch),
 		remote.WithContext(ctx),
 	)
 
@@ -231,6 +269,17 @@ func fetchImage(ctx context.Context, refStr, dst string, status io.Writer) error
 	image, err := rmt.Image()
 	if err != nil {
 		return err
+	}
+
+	// WithPlatform only takes effect for multi-platform images. A
+	// single-platform image is returned as is, verify what we got.
+	conf, err := image.ConfigFile()
+	if err != nil {
+		return fmt.Errorf("image config: %w", err)
+	}
+
+	if conf.OS != "linux" || conf.Architecture != arch {
+		return fmt.Errorf("image %s is %s/%s, not linux/%s", ref.Name(), conf.OS, conf.Architecture, arch)
 	}
 
 	if err := os.MkdirAll(dst, 0755); err != nil {
@@ -254,4 +303,25 @@ func (rp readProxy) Read(p []byte) (int, error) {
 	n, err := rp.Reader.Read(p)
 	rp.ProgressBar.Add(n)
 	return n, err
+}
+
+// validateKernel rejects kernels which QEMU can't boot on the given
+// architecture, typically hanging the VM without any console output.
+func validateKernel(path, arch string) error {
+	ef, err := elf.Open(path)
+	if _, ok := errors.AsType[*elf.FormatError](err); ok {
+		// Not an ELF, assume a native boot format.
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer ef.Close()
+
+	if arch == "arm64" {
+		// QEMU expects bare-metal Images for arm64.
+		return fmt.Errorf("kernel %s: QEMU can't boot an ELF kernel on %s, use the flat Image format", path, arch)
+	}
+
+	return nil
 }

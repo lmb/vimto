@@ -11,40 +11,29 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
-	"github.com/kballard/go-shellquote"
+
+	"lmb.io/vimto/internal/guest"
 )
 
 type config struct {
 	Kernel   string          `toml:"kernel"`
+	Userland string          `toml:"userland"`
+	Volumes  []string        `toml:"volumes"`
 	Memory   string          `toml:"memory"`
 	SMP      string          `toml:"smp"`
 	User     string          `toml:"user"`
 	GDB      string          `toml:"-"`
-	Setup    []configCommand `toml:"setup"`
-	Teardown []configCommand `toml:"teardown"`
-}
-
-type configCommand []string
-
-func (cc *configCommand) UnmarshalText(text []byte) error {
-	words, err := shellquote.Split(string(text))
-	if err != nil {
-		return err
-	}
-
-	*cc = configCommand(words)
-	return nil
-}
-
-func (cc *configCommand) MarshalText() ([]byte, error) {
-	return []byte(shellquote.Join(*cc...)), nil
+	Console  bool            `toml:"-"`
+	Setup    []guest.Command `toml:"setup"`
+	Teardown []guest.Command `toml:"teardown"`
 }
 
 var defaultConfig = &config{
+	Volumes:  []string{},
 	Memory:   "size=128M",
 	SMP:      "cpus=1",
-	Setup:    []configCommand{},
-	Teardown: []configCommand{},
+	Setup:    []guest.Command{},
+	Teardown: []guest.Command{},
 }
 
 const configFileName = ".vimto.toml"
@@ -98,15 +87,23 @@ func configFlags(name string, cfg *config) *flag.FlagSet {
 		cfg.Kernel = fmt.Sprintf("%s:%s", image, tag)
 		return nil
 	})
+	fs.Func("userland", "`path or url` of an OCI image containing the guest's userland, for example 'alpine:latest'", func(s string) error {
+		cfg.Userland = s
+		return nil
+	})
+	fs.Func("volume", "`host:guest` mapping of a directory shared with the VM (repeatable)", func(s string) error {
+		cfg.Volumes = append(cfg.Volumes, s)
+		return nil
+	})
 	fs.Func("memory", "memory to give to the VM", func(s string) error {
 		cfg.Memory = s
 		return nil
 	})
-	fs.Func("smp", "", func(s string) error {
+	fs.Func("smp", "the -smp parameter passed to QEMU to define a CPU topology hierarchy, for example 'cpus=2'", func(s string) error {
 		cfg.SMP = s
 		return nil
 	})
-	fs.BoolFunc("sudo", "execute as root", func(s string) error {
+	fs.BoolFunc("sudo", "run the process as root inside the VM, otherwise run as the current user (default: false)", func(s string) error {
 		if s != "true" {
 			return errors.New("flag only accepts true")
 		}
@@ -120,6 +117,14 @@ func configFlags(name string, cfg *config) *flag.FlagSet {
 		}
 
 		cfg.GDB = "localhost:1234"
+		return nil
+	})
+	fs.BoolFunc("console", "stream the guest's console to stderr", func(s string) error {
+		if s != "true" {
+			return errors.New("flag only accepts true")
+		}
+
+		cfg.Console = true
 		return nil
 	})
 

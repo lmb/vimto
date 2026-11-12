@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -21,18 +22,6 @@ import (
 	"rsc.io/script"
 	"rsc.io/script/scripttest"
 )
-
-func TestMain(m *testing.M) {
-	if os.Getpid() == 1 {
-		err := minimalInit(realSyscaller{}, os.Args[1:])
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Error from minimalInit:", err)
-			os.Exit(1)
-		}
-	}
-
-	os.Exit(m.Run())
-}
 
 func TestExecutable(t *testing.T) {
 	path := t.TempDir()
@@ -92,6 +81,31 @@ func TestExecutable(t *testing.T) {
 	scripttest.Test(t, context.Background(), e, env, "testdata/*.txt")
 }
 
+func TestParseVolume(t *testing.T) {
+	for _, tc := range []struct {
+		volume string
+		want   volume
+	}{
+		{"/a", volume{"/a", "/a"}},
+		{"/a:/b", volume{"/a", "/b"}},
+	} {
+		have, err := parseVolume(tc.volume)
+		qt.Assert(t, qt.IsNil(err))
+		qt.Assert(t, qt.Equals(have, tc.want), qt.Commentf(tc.volume))
+	}
+
+	for _, volume := range []string{"", ":/b", "/a:", "/a:b"} {
+		_, err := parseVolume(volume)
+		qt.Assert(t, qt.IsNotNil(err), qt.Commentf(volume))
+	}
+
+	// Relative host paths.
+	have, err := parseVolume("a:/b")
+	qt.Assert(t, qt.IsNil(err))
+	qt.Assert(t, qt.IsTrue(filepath.IsAbs(have.Host)))
+	qt.Assert(t, qt.Equals(have.Guest, "/b"))
+}
+
 func kernelImage() string {
 	image := os.Getenv("CI_KERNEL")
 	if image == "" {
@@ -106,12 +120,12 @@ var fetchKernelImage = sync.OnceValues(func() (*bootFiles, error) {
 		return nil, err
 	}
 
-	img, err := cache.Acquire(context.Background(), kernelImage(), io.Discard)
+	img, err := cache.Acquire(context.Background(), kernelImage(), runtime.GOARCH, "kernel", io.Discard, stripLibSymlink)
 	if err != nil {
 		return nil, err
 	}
 
-	return newBootFilesFromImage(img)
+	return newBootFilesFromImage(img, runtime.GOARCH)
 })
 
 // mustFetchKernelImage fetches a kernel image once for the entire lifetime
